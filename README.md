@@ -1,0 +1,50 @@
+# opencode-otel
+
+Unofficial community OpenCode plugin for privacy-conscious OpenTelemetry traces and metrics. **Work in progress:** HTTP/protobuf exports agent-execution and tool spans and duration/call-count metrics. Model, permission, content-capture, HTTP/JSON, and gRPC instrumentation are still being developed.
+
+## Install from Git
+
+In OpenCode v2, add the package to your global `~/.config/opencode/opencode.jsonc`:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [
+    { "package": "github:lexedwards/opencode-otel#main", "options": {
+      "endpoint": "https://collector.example:4318"
+    } }
+  ]
+}
+```
+
+`#main` follows development. Once a stable immutable SemVer tag exists, use e.g. `#v0.1.0` to pin it. This plugin targets OpenCode **2.0.16**, with a minimum baseline of **2.0.11**. Later v2 versions may or may not work; compatibility beyond the targeted version is best-effort.
+
+## Configuration
+
+Without any endpoint, the plugin prints one `[opencode-otel]` informational message and remains inactive. `endpoint` activates both signals; `traces.endpoint` or `metrics.endpoint` activates only that signal. A generic HTTP endpoint appends `/v1/traces` and `/v1/metrics`; a signal endpoint is a complete URL. gRPC endpoints identify a host and port without a path.
+
+```jsonc
+{
+  "plugins": [{ "package": "github:lexedwards/opencode-otel#main", "options": {
+    "traces": { "endpoint": "https://collector.example:4318/v1/traces", "protocol": "http/protobuf" },
+    "metrics": { "endpoint": "https://collector.example:4318/v1/metrics", "protocol": "http/json" }
+  } }]
+}
+```
+
+Fields can be set globally or per signal: `endpoint`, `protocol` (`http/protobuf`; `http/json` and experimental `grpc` are reserved for upcoming work), `headers`, `timeoutMillis`, `compression` (`none` or `gzip`), `certificate`, `clientCertificate`, and `clientKey`. Standard `OTEL_EXPORTER_OTLP_*` and `OTEL_EXPORTER_OTLP_TRACES_*` / `OTEL_EXPORTER_OTLP_METRICS_*` environment settings are supported for these fields. Option values override signal-specific env values, which override generic env values, then defaults. A missing secret reference or invalid field disables the affected signal with a safe diagnostic. The plugin keeps the first process-wide configuration while instances are active; restart the OpenCode service to apply conflicting changes. Unsupported transports are diagnosed and never silently changed to HTTP/protobuf.
+
+Plugin-option header and certificate values must be `{env:NAME}` references, resolved from the process environment. Certificate option references must resolve to PEM contents; standard `OTEL_*_CERTIFICATE`, `OTEL_*_CLIENT_CERTIFICATE`, and `OTEL_*_CLIENT_KEY` env values are certificate file paths handled by the exporter. Do not place tokens or key contents in the config file.
+
+```text
+plugin options ───┐
+signal OTEL_* ────┼─> resolve per signal ─> validate ─> inactive or enabled configuration
+generic OTEL_* ───┤                            │
+defaults ─────────┘                            └─> safe local diagnostic on error
+                                         │
+                                         └─> first active process configuration wins
+```
+
+The exporter package capability matrix and Bun limitations are in [docs/otlp-compatibility.md](docs/otlp-compatibility.md). Agent telemetry observes durable execution start and completion events; tool telemetry uses before/after hooks and records `gen_ai.execute_tool.duration` and `gen_ai.invoke_agent.tool_calls`. Tool spans are direct children of their agent span. It attaches no prompt, response, file path, error message, tool arguments, or tool results. Standard `OTEL_TRACES_SAMPLER` and `OTEL_TRACES_SAMPLER_ARG` settings are honored independently of metric collection. Tests run with `bun test` and `bun run typecheck`; they do not start OpenCode or a Collector.
+
+Licensed under Apache-2.0.

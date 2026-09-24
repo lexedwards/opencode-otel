@@ -1,0 +1,26 @@
+{
+  "name": "opencode-otel",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Unofficial OpenCode OpenTelemetry plugin",
+  "engines": { "opencode": ">=2.0.11" },
+  "exports": { ".": "./src/index.ts" },
+  "files": ["src", "LICENSE", "README.md"],
+  "scripts": { "test": "bun test", "typecheck": "tsc --noEmit" },
+  "dependencies": {
+    "@opencode/plugin": "2.0.16",
+    "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/resources": "2.11.0",
+    "@opentelemetry/sdk-trace-base": "2.11.0",
+    "@opentelemetry/sdk-metrics": "2.11.0",
+    "@opentelemetry/otlp-exporter-base": "0.222.0",
+    "@opentelemetry/exporter-trace-otlp-http": "0.222.0",
+    "@opentelemetry/exporter-metrics-otlp-http": "0.222.0",
+    "@opentelemetry/exporter-trace-otlp-proto": "0.222.0",
+    "@opentelemetry/exporter-metrics-otlp-proto": "0.222.0",
+    "@opentelemetry/exporter-trace-otlp-grpc": "0.222.0",
+    "@opentelemetry/exporter-metrics-otlp-grpc": "0.222.0"
+  },
+  "devDependencies": { "@types/bun": "latest", "typescript": "~5.9.3" }
+}
