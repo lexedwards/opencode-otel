@@ -15,5 +15,5 @@ Use the official `@opentelemetry/exporter-{trace,metrics}-otlp-{proto,http,grpc}
 ## Consequences
 
 - Explicit transport selection avoids a silent fallback that could alter security or wire format.
-- Both HTTP transports use the Node HTTP agent for TLS/mTLS; gRPC requires channel credentials and metadata instead.
-- Bun or upstream exporter updates require rechecking import, construction, and configuration behavior; gRPC requires independent operational validation before claiming production support.
+- Both HTTP transports use the Node HTTP agent for TLS/mTLS; gRPC uses the official exporter packages with channel credentials and metadata instead. gRPC failures disable only their signal and never fall back to HTTP.
+- Bun or upstream exporter updates require rechecking import, construction, and configuration behavior; gRPC is available as an experimental option and requires independent operational validation before claiming production support.

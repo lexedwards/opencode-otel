@@ -1,6 +1,6 @@
 # OTLP exporter compatibility
 
-Tested with Bun 1.4.0, OpenTelemetry exporter packages 0.222.0, and `bun test` on 2026-09-24. `test/exporter-compatibility.test.ts` imports and constructs trace and metric exporters for each transport and shuts them down without exporting. All six constructors passed. HTTP/protobuf and HTTP/JSON are wired in the plugin; gRPC remains reserved. This does **not** test network delivery, TLS handshakes, Collector interoperability, or OpenCode startup.
+Tested with Bun 1.4.0, OpenTelemetry exporter packages 0.222.0, and `bun test` on 2026-09-24. `test/exporter-compatibility.test.ts` imports and constructs trace and metric exporters for each transport and shuts them down without exporting. All six constructors passed. HTTP/protobuf and HTTP/JSON are wired in the plugin; gRPC is wired as an experimental path. This does **not** test network delivery, TLS handshakes, Collector interoperability, or OpenCode startup.
 
 | Transport | Trace / metric package suffix | Endpoint | Headers | TLS / mTLS | Timeout / compression |
 | --- | --- | --- | --- | --- | --- |

@@ -7,6 +7,9 @@ import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-proto"
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-proto"
 import { OTLPTraceExporter as JsonTraceExporter } from "@opentelemetry/exporter-trace-otlp-http"
 import { OTLPMetricExporter as JsonMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http"
+import { OTLPTraceExporter as GrpcTraceExporter } from "@opentelemetry/exporter-trace-otlp-grpc"
+import { OTLPMetricExporter as GrpcMetricExporter } from "@opentelemetry/exporter-metrics-otlp-grpc"
+import { createEmptyMetadata, createInsecureCredentials, createSslCredentials } from "@opentelemetry/otlp-grpc-exporter-base"
 import { CompressionAlgorithm } from "@opentelemetry/otlp-exporter-base"
 import { exporterSecrets, type Config, type SignalConfig } from "./config"
 
@@ -224,14 +227,26 @@ function safeErrorType(type?: string): string {
 
 export type Exporters = { traces?: SpanExporter; metrics?: PushMetricExporter }
 type HttpOptions = NonNullable<ConstructorParameters<typeof OTLPTraceExporter>[0]>
+type GrpcOptions = NonNullable<ConstructorParameters<typeof GrpcTraceExporter>[0]>
 type Factories = {
   traces: Record<"http/protobuf" | "http/json", (options: HttpOptions) => SpanExporter & { forceFlush(): Promise<void> }>
   metrics: Record<"http/protobuf" | "http/json", (options: HttpOptions) => PushMetricExporter & { selectAggregationTemporality: NonNullable<PushMetricExporter["selectAggregationTemporality"]> }>
+  grpcTraces?: (options: GrpcOptions) => SpanExporter & { forceFlush(): Promise<void> }
+  grpcMetrics?: (options: GrpcOptions) => PushMetricExporter & { selectAggregationTemporality: NonNullable<PushMetricExporter["selectAggregationTemporality"]> }
+  credentials?: {
+    ssl: typeof createSslCredentials
+    insecure: typeof createInsecureCredentials
+    metadata: typeof createEmptyMetadata
+  }
 }
 const httpFactories: Factories = {
   traces: { "http/protobuf": (options) => new OTLPTraceExporter(options), "http/json": (options) => new JsonTraceExporter(options) },
   metrics: { "http/protobuf": (options) => new OTLPMetricExporter(options), "http/json": (options) => new JsonMetricExporter(options) },
+  grpcTraces: (options) => new GrpcTraceExporter(options),
+  grpcMetrics: (options) => new GrpcMetricExporter(options),
+  credentials: { ssl: createSslCredentials, insecure: createInsecureCredentials, metadata: createEmptyMetadata },
 }
+const setupFailures = new Map<string, number>()
 export function makeExporters(config: Config, factories: Factories = httpFactories): Exporters {
   const result: Exporters = {}
   let lastFailure = 0
@@ -247,27 +262,62 @@ export function makeExporters(config: Config, factories: Factories = httpFactori
     compression: signal.compression === "gzip" ? CompressionAlgorithm.GZIP : CompressionAlgorithm.NONE,
     httpAgentOptions: { keepAlive: true, ca: exporterSecrets(signal).certificate, cert: exporterSecrets(signal).clientCertificate, key: exporterSecrets(signal).clientKey },
   })
-  if (config.traces?.protocol === "http/protobuf" || config.traces?.protocol === "http/json") {
-    const exporter = factories.traces[config.traces.protocol]!(options(config.traces))
-    result.traces = {
-      export(spans, callback) {
-        try { exporter.export(spans, (result) => { if (result.code !== 0) diagnostic(); callback(result) }) }
-        catch { diagnostic(); callback({ code: 1 }) }
-      },
-      shutdown: () => exporter.shutdown(),
-      forceFlush: () => exporter.forceFlush(),
+  const grpcOptions = (signal: SignalConfig): GrpcOptions => {
+    const privateOptions = exporterSecrets(signal)
+    const credentials = factories.credentials ?? httpFactories.credentials!
+    const metadata = credentials.metadata()
+    for (const [key, value] of Object.entries(privateOptions.headers)) metadata.set(key, value)
+    const insecure = signal.endpoint.startsWith("http://")
+    return {
+      url: signal.endpoint,
+      metadata,
+      credentials: insecure ? credentials.insecure() : credentials.ssl(
+        privateOptions.certificate ? Buffer.from(privateOptions.certificate) : undefined,
+        privateOptions.clientKey ? Buffer.from(privateOptions.clientKey) : undefined,
+        privateOptions.clientCertificate ? Buffer.from(privateOptions.clientCertificate) : undefined,
+      ),
+      timeoutMillis: signal.timeoutMillis,
+      compression: signal.compression === "gzip" ? CompressionAlgorithm.GZIP : CompressionAlgorithm.NONE,
     }
   }
-  if (config.metrics?.protocol === "http/protobuf" || config.metrics?.protocol === "http/json") {
-    const exporter = factories.metrics[config.metrics.protocol]!(options(config.metrics))
-    result.metrics = {
-      export(metrics, callback) {
-        try { exporter.export(metrics, (result) => { if (result.code !== 0) diagnostic(); callback(result) }) }
-        catch { diagnostic(); callback({ code: 1 }) }
-      },
-      shutdown: () => exporter.shutdown(),
-      forceFlush: () => exporter.forceFlush(),
-      selectAggregationTemporality: (type) => exporter.selectAggregationTemporality(type),
+  const setup = <T>(signal: "traces" | "metrics", protocol: string, construct: () => T): T | undefined => {
+    try { return construct() } catch {
+      const key = `${signal}:${protocol}`
+      const now = Date.now()
+      if (now - (setupFailures.get(key) ?? 0) > 60_000) {
+        setupFailures.set(key, now)
+        console.info(`[opencode-otel] ${signal} ${protocol === "grpc" ? "experimental gRPC" : "HTTP"} exporter initialization failed; signal disabled`)
+      }
+      return undefined
+    }
+  }
+  const traceConfig = config.traces
+  if (traceConfig) {
+    const exporter = setup("traces", traceConfig.protocol, () => traceConfig.protocol === "grpc" ? factories.grpcTraces?.(grpcOptions(traceConfig)) : factories.traces[traceConfig.protocol]!(options(traceConfig)))
+    if (exporter) {
+      result.traces = {
+        export(spans, callback) {
+          try { exporter.export(spans, (result) => { if (result.code !== 0) diagnostic(); callback(result) }) }
+          catch { diagnostic(); callback({ code: 1 }) }
+        },
+        shutdown: () => exporter.shutdown(),
+        forceFlush: () => exporter.forceFlush(),
+      }
+    }
+  }
+  const metricConfig = config.metrics
+  if (metricConfig) {
+    const exporter = setup("metrics", metricConfig.protocol, () => metricConfig.protocol === "grpc" ? factories.grpcMetrics?.(grpcOptions(metricConfig)) : factories.metrics[metricConfig.protocol]!(options(metricConfig)))
+    if (exporter) {
+      result.metrics = {
+        export(metrics, callback) {
+          try { exporter.export(metrics, (result) => { if (result.code !== 0) diagnostic(); callback(result) }) }
+          catch { diagnostic(); callback({ code: 1 }) }
+        },
+        shutdown: () => exporter.shutdown(),
+        forceFlush: () => exporter.forceFlush(),
+        selectAggregationTemporality: (type) => exporter.selectAggregationTemporality(type),
+      }
     }
   }
   return result

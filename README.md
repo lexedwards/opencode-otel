@@ -1,6 +1,6 @@
 # opencode-otel
 
-Unofficial community OpenCode plugin for privacy-conscious OpenTelemetry traces and metrics. **Work in progress:** HTTP/protobuf and HTTP/JSON export agent-execution, tool and primary model spans and metrics. Permission, content-capture, and gRPC instrumentation are still being developed.
+Unofficial community OpenCode plugin for privacy-conscious OpenTelemetry traces and metrics. **Work in progress:** HTTP/protobuf, HTTP/JSON, and experimental gRPC export agent-execution, tool and primary model spans and metrics. Permission and content-capture instrumentation are still being developed.
 
 ## Install from Git
 
@@ -46,9 +46,9 @@ Without any endpoint, the plugin prints one `[opencode-otel]` informational mess
 }
 ```
 
-Fields can be set globally or per signal: `endpoint`, `protocol` (`http/protobuf` or `http/json`; experimental `grpc` is reserved for upcoming work), `headers`, `timeoutMillis`, `compression` (`none` or `gzip`), `certificate`, `clientCertificate`, and `clientKey`. Standard `OTEL_EXPORTER_OTLP_*` and `OTEL_EXPORTER_OTLP_TRACES_*` / `OTEL_EXPORTER_OTLP_METRICS_*` environment settings are supported for these fields. Option values override signal-specific env values, which override generic env values, then defaults. A missing secret reference or invalid field disables the affected signal with a safe diagnostic. The plugin keeps the first process-wide configuration while instances are active; restart the OpenCode service to apply conflicting changes. Unsupported transports are diagnosed and never silently changed to HTTP/protobuf.
+Fields can be set globally or per signal: `endpoint`, `protocol` (`http/protobuf`, `http/json`, or experimental `grpc`), `headers`, `timeoutMillis`, `compression` (`none` or `gzip`), `certificate`, `clientCertificate`, and `clientKey`. Standard `OTEL_EXPORTER_OTLP_*` and `OTEL_EXPORTER_OTLP_TRACES_*` / `OTEL_EXPORTER_OTLP_METRICS_*` environment settings are supported for these fields. Option values override signal-specific env values, which override generic env values, then defaults. A missing secret reference or invalid field disables the affected signal with a safe diagnostic. The plugin keeps the first process-wide configuration while instances are active; restart the OpenCode service to apply conflicting changes. Exporter initialization failures disable only the affected signal without protocol fallback.
 
-Plugin-option header and certificate values must be `{env:NAME}` references, resolved once from the process environment. Certificate option references must resolve to PEM contents; standard `OTEL_*_CERTIFICATE`, `OTEL_*_CLIENT_CERTIFICATE`, and `OTEL_*_CLIENT_KEY` env values are certificate file paths read at setup. Secret values are held separately from printable configuration. Do not place tokens or key contents in the config file. For a secured HTTP collector example and transport settings, see [HTTP OTLP collector guidance](docs/http-collector.md).
+Plugin-option header and certificate values must be `{env:NAME}` references, resolved once from the process environment. Certificate option references must resolve to PEM contents; standard `OTEL_*_CERTIFICATE`, `OTEL_*_CLIENT_CERTIFICATE`, and `OTEL_*_CLIENT_KEY` env values are certificate file paths read at setup. Secret values are held separately from printable configuration. Do not place tokens or key contents in the config file. See [HTTP OTLP collector guidance](docs/http-collector.md) and [experimental gRPC guidance](docs/grpc-collector.md).
 
 Optional `providerNames` maps an OpenCode provider ID to a GenAI provider name (for example, `{"my-gateway": "openai"}`). Overrides apply to spans and metric dimensions and should remain low-cardinality; invalid maps are ignored with a diagnostic.
 

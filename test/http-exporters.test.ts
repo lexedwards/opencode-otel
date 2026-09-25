@@ -1,7 +1,8 @@
-import { expect, test } from "bun:test"
+import { expect, test, spyOn } from "bun:test"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { CompressionAlgorithm } from "@opentelemetry/otlp-exporter-base"
 import { AggregationTemporality } from "@opentelemetry/sdk-metrics"
+import { createEmptyMetadata, createInsecureCredentials } from "@opentelemetry/otlp-grpc-exporter-base"
 import { resolveConfig } from "../src/config"
 import { createTelemetry, makeExporters } from "../src/telemetry"
 
@@ -88,4 +89,52 @@ test("trace batching honors configured maximum export batch size", async () => {
   await pipeline.traces?.forceFlush()
   expect(sizes).toEqual([1, 1])
   await pipeline.shutdown()
+})
+
+test("gRPC is explicit, isolated per signal, and passes private metadata and TLS credentials", async () => {
+  const config = resolveConfig({ endpoint: "https://collector.test:4317", protocol: "grpc", headers: { Authorization: "{env:TOKEN}" }, certificate: "{env:CA}" }, {
+    TOKEN: "Bearer private", CA: "-----BEGIN CERTIFICATE-----\nprivate\n-----END CERTIFICATE-----",
+  })
+  const seen: { signal: string; options: unknown }[] = []
+  const certs: unknown[] = []
+  const diagnostic = spyOn(console, "info").mockImplementation(() => {})
+  const factories: NonNullable<Parameters<typeof makeExporters>[1]> = {
+    traces: { "http/json": () => { throw Error("HTTP fallback") }, "http/protobuf": () => { throw Error("HTTP fallback") } },
+    metrics: { "http/json": () => { throw Error("HTTP fallback") }, "http/protobuf": () => { throw Error("HTTP fallback") } },
+    grpcTraces: (options) => { seen.push({ signal: "traces", options }); throw Error("Bun gRPC unsupported") },
+    grpcMetrics: (options) => { seen.push({ signal: "metrics", options }); return { export(_data, done) { done({ code: 0 }) }, shutdown: async () => {}, forceFlush: async () => {}, selectAggregationTemporality: () => AggregationTemporality.CUMULATIVE } },
+    credentials: { ssl: (...args) => { certs.push(args.map((value) => value?.toString())); return createInsecureCredentials() }, insecure: createInsecureCredentials, metadata: createEmptyMetadata },
+  }
+  const exporters = makeExporters(config, factories)
+  expect(diagnostic.mock.calls.map((call) => call[0])).toEqual(["[opencode-otel] traces experimental gRPC exporter initialization failed; signal disabled"])
+  diagnostic.mockRestore()
+  expect(exporters.traces).toBeUndefined()
+  expect(exporters.metrics).toBeDefined()
+  expect(seen).toHaveLength(2)
+  expect(certs).toHaveLength(2)
+  expect(certs[0]).toEqual(["-----BEGIN CERTIFICATE-----\nprivate\n-----END CERTIFICATE-----", undefined, undefined])
+  expect((seen[1]?.options as { metadata: ReturnType<typeof createEmptyMetadata> }).metadata.get("authorization")).toEqual(["Bearer private"])
+  expect(JSON.stringify(config)).not.toContain("Bearer private")
+  await exporters.metrics?.shutdown()
+})
+
+test("gRPC rejects TLS settings on cleartext endpoints without enabling a sibling signal", () => {
+  const config = resolveConfig({ traces: { endpoint: "http://collector.test:4317", protocol: "grpc", certificate: "{env:CA}" } }, { CA: "-----BEGIN CERTIFICATE-----\nprivate\n-----END CERTIFICATE-----" })
+  expect(config.traces).toBeUndefined()
+  expect(config.metrics).toBeUndefined()
+  expect(config.diagnostics.join(" ")).not.toContain("private")
+  const plain = resolveConfig({ metrics: { endpoint: "http://collector.test:4317", protocol: "grpc" } }, {})
+  const exporters = makeExporters(plain)
+  expect(exporters.traces).toBeUndefined()
+  expect(exporters.metrics).toBeDefined()
+  return exporters.metrics?.shutdown()
+})
+
+test("official gRPC exporters construct for both signals without HTTP fallback or network I/O", async () => {
+  const config = resolveConfig({ endpoint: "http://collector.test:4317", protocol: "grpc" }, {})
+  const exporters = makeExporters(config)
+  expect(exporters.traces).toBeDefined()
+  expect(exporters.metrics).toBeDefined()
+  await exporters.traces?.shutdown()
+  await exporters.metrics?.shutdown()
 })

@@ -12,12 +12,10 @@ export default Plugin.define({
     const instance = establishConfig(registry, proposed)
     for (const diagnostic of proposed.diagnostics) console.info(`[opencode-otel] ${diagnostic}`)
     if (instance.diagnostic) console.info(`[opencode-otel] ${instance.diagnostic}`)
-    for (const signal of ["traces", "metrics"] as const) {
-      if (instance.config[signal] && instance.config[signal].protocol === "grpc") console.info(`[opencode-otel] ${signal} transport is not implemented yet; signal disabled`)
-    }
-    if (!pipeline && ([instance.config.traces?.protocol, instance.config.metrics?.protocol].some((protocol) => protocol?.startsWith("http/")))) {
+    if (!pipeline && (instance.config.traces || instance.config.metrics)) {
       try {
-        pipeline = createTelemetry(instance.config, ctx.app.version)
+        const created = createTelemetry(instance.config, ctx.app.version)
+        if (created.traces || created.metrics) pipeline = created
       } catch {
         console.info("[opencode-otel] Telemetry initialization failed; export disabled")
       }

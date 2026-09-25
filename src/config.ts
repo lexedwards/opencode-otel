@@ -119,7 +119,7 @@ function resolveSignal(signal: Signal, options: Record<string, unknown>, env: En
   }
   if ([privateOptions.certificate, privateOptions.clientCertificate].some((value) => value !== undefined && !/-----BEGIN CERTIFICATE-----[\s\S]+-----END CERTIFICATE-----/.test(value))) throw Error("certificate")
   if (privateOptions.clientKey !== undefined && !/-----BEGIN (?:RSA |EC |ENCRYPTED )?PRIVATE KEY-----[\s\S]+-----END (?:RSA |EC |ENCRYPTED )?PRIVATE KEY-----/.test(privateOptions.clientKey)) throw Error("client key")
-  if (protocol !== "grpc" && (privateOptions.certificate || privateOptions.clientCertificate) && !String(rawEndpoint).startsWith("https://")) throw Error("certificate")
+  if ((privateOptions.certificate || privateOptions.clientCertificate) && String(rawEndpoint).startsWith("http://")) throw Error("certificate")
   const positive = (value: unknown, field: string): number => {
     const result = Number(value)
     if (!Number.isSafeInteger(result) || result <= 0) throw Error(field)
