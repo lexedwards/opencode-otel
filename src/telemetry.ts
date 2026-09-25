@@ -12,6 +12,7 @@ import { OTLPMetricExporter as GrpcMetricExporter } from "@opentelemetry/exporte
 import { createEmptyMetadata, createInsecureCredentials, createSslCredentials } from "@opentelemetry/otlp-grpc-exporter-base"
 import { CompressionAlgorithm } from "@opentelemetry/otlp-exporter-base"
 import { exporterSecrets, type Config, type SignalConfig } from "./config"
+import { PrivacyPipeline, type Bounded } from "./privacy"
 
 export type ExecutionEvent = {
   id: string
@@ -57,7 +58,8 @@ export type CompactionEvent = {
 export type SessionRelationEvent = { id: string; created: number; type: "session.created" | "session.forked"; location?: { directory?: string }; data: { sessionID: string; parentID?: string; title?: string } }
 
 type ToolState = { started: number; span?: Span }
-type ModelState = { started: number; span?: Span; provider: string; model: string; firstChunk?: number; retries: number; retryEvents: Set<string> }
+type ModelState = { started: number; span?: Span; provider: string; model: string; firstChunk?: number; retries: number; retryEvents: Set<string>; outputParts?: Map<number, string> }
+type CapturedContext = Partial<Record<"gen_ai.input.messages" | "gen_ai.system_instructions" | "gen_ai.tool.definitions" | "gen_ai.output.messages", Bounded>>
 type CompactionState = { started: number; model: ModelState; execution?: Active }
 type Active = { id: string; started: number; span?: Span; tools: Map<string, ToolState>; completedTools: Set<string>; toolCalls: number; models: Map<string, ModelState>; completedModels: Set<string>; inferenceCalls: number; permissions: Map<string, { started: number; action: string }>; completedPermissions: Set<string> }
 
@@ -69,6 +71,7 @@ export class ExecutionTelemetry {
   private readonly compactionSeen = new Set<string>()
   private readonly parents = new Map<string, { parentID: string; created: number; context?: SpanContext }>()
   private readonly pendingTerminals = new Map<string, ExecutionEvent | ModelEvent | CompactionEvent>()
+  private readonly pendingContent = new Map<string, { created: number; content: CapturedContext }>()
   private readonly seen = new Map<string, number>()
   private readonly histogram?: ReturnType<Meter["createHistogram"]>
   private readonly toolDuration?: ReturnType<Meter["createHistogram"]>
@@ -85,7 +88,7 @@ export class ExecutionTelemetry {
   private lastDroppedDiagnostic = 0
   private lastPermissionDiagnostic = 0
 
-  constructor(private readonly tracer?: Tracer, meter?: Meter, private readonly now: () => number = Date.now, private readonly providerNames: Record<string, string> = {}, private readonly expiryMillis = 24 * 60 * 60_000) {
+  constructor(private readonly tracer?: Tracer, meter?: Meter, private readonly now: () => number = Date.now, private readonly providerNames: Record<string, string> = {}, private readonly expiryMillis = 24 * 60 * 60_000, private readonly privacy?: PrivacyPipeline) {
     this.histogram = meter?.createHistogram("gen_ai.invoke_agent.duration", { unit: "s", description: "Agent invocation duration" })
     this.toolDuration = meter?.createHistogram("gen_ai.execute_tool.duration", { unit: "s", description: "Tool execution duration" })
     this.toolCalls = meter?.createHistogram("gen_ai.invoke_agent.tool_calls", { unit: "{call}", description: "Tool calls per agent invocation" })
@@ -157,6 +160,7 @@ export class ExecutionTelemetry {
       execution.span?.setStatus({ code: SpanStatusCode.ERROR })
     } else execution.span?.setStatus({ code: SpanStatusCode.OK })
     execution.span?.end(event.created)
+    for (const key of this.pendingContent.keys()) if (key.startsWith(`primary:${session}:`) || key.startsWith(`compaction:${session}:`)) this.pendingContent.delete(key)
   }
 
   onSessionRelation(event: SessionRelationEvent): void {
@@ -176,6 +180,40 @@ export class ExecutionTelemetry {
       if (!selected || step.started > selected.started) selected = step
     }
     return selected?.span?.spanContext()
+  }
+
+  captureContext(event: { sessionID: string; model: { id: string; providerID: string }; system: unknown; messages: unknown; tools?: unknown }, kind: "primary" | "compaction"): void {
+    if (!this.privacy) return
+    if (kind === "primary" && (!this.active.has(event.sessionID) || this.compactions.has(event.sessionID))) return
+    const { options } = this.privacy
+    const content: CapturedContext = {}
+    if (kind === "primary" && options.inputMessages) content["gen_ai.input.messages"] = this.privacy.bound(this.privacy.messages(event.messages), true)
+    if (options.systemInstructions) content["gen_ai.system_instructions"] = this.privacy.bound(this.privacy.instructions(event.system))
+    if (options.toolDefinitions) content["gen_ai.tool.definitions"] = this.privacy.bound(this.privacy.definitions(event.tools))
+    if (!Object.keys(content).length) return
+    const active = kind === "compaction" ? this.compactions.get(event.sessionID)?.model : [...(this.active.get(event.sessionID)?.models.values() ?? [])].reverse().find((step) => step.model === event.model.id)
+    if (active) this.attachContent(active.span, content)
+    else if (this.pendingContent.size < 2048) this.pendingContent.set(`${kind}:${event.sessionID}:${event.model.id}`, { created: this.now(), content })
+  }
+
+  private attachContent(span: Span | undefined, content: CapturedContext): void {
+    if (!span) return
+    for (const [key, bounded] of Object.entries(content)) {
+      if (!bounded) continue
+      if (bounded.omittedMessages) {
+        span.setAttribute(`opencode.${key}.omitted_messages`, bounded.omittedMessages)
+        span.setAttribute(`opencode.${key}.omitted_bytes`, bounded.omittedBytes)
+      }
+      if (bounded.json !== "[]") span.setAttribute(key, bounded.json)
+    }
+  }
+
+  onTextEnded(event: { type: "session.text.ended"; data: { sessionID: string; assistantMessageID: string; ordinal: number; text: string } }): void {
+    if (!this.privacy?.options.outputMessages) return
+    const step = this.active.get(event.data.sessionID)?.models.get(event.data.assistantMessageID)
+    if (!step || typeof event.data.text !== "string" || !Number.isSafeInteger(event.data.ordinal) || event.data.ordinal < 0) return
+    step.outputParts ??= new Map()
+    if (step.outputParts.size < 256 || step.outputParts.has(event.data.ordinal)) step.outputParts.set(event.data.ordinal, this.privacy.text(event.data.text))
   }
 
   onPermissionEvent(event: PermissionEvent): void {
@@ -251,6 +289,7 @@ export class ExecutionTelemetry {
     }
     for (const [session, relation] of this.parents) if (now - relation.created >= this.expiryMillis) this.parents.delete(session)
     for (const [key, event] of this.pendingTerminals) if (now - event.created >= this.expiryMillis) this.pendingTerminals.delete(key)
+    for (const [key, value] of this.pendingContent) if (now - value.created >= this.expiryMillis) this.pendingContent.delete(key)
     if (expired && Date.now() - this.lastDroppedDiagnostic >= 60_000) {
       this.lastDroppedDiagnostic = Date.now()
       console.info("[opencode-otel] Stale telemetry operation abandoned")
@@ -271,6 +310,9 @@ export class ExecutionTelemetry {
       const parent = execution.span ? trace.setSpan(ROOT_CONTEXT, execution.span) : ROOT_CONTEXT
       const span = this.tracer && execution.span ? this.tracer.startSpan(`chat ${model}`, { kind: SpanKind.CLIENT, startTime: started, attributes: attrs }, parent) : undefined
       execution.models.set(id, { started, span, provider, model, retries: 0, retryEvents: new Set() })
+      const contentKey = `primary:${event.data.sessionID}:${model}`
+      this.attachContent(span, this.pendingContent.get(contentKey)?.content ?? {})
+      this.pendingContent.delete(contentKey)
       const terminal = this.takeTerminal<ModelEvent>(key, started)
       if (terminal) this.onModelEvent(terminal)
       return
@@ -309,6 +351,7 @@ export class ExecutionTelemetry {
       const parent = execution?.span ? trace.setSpan(ROOT_CONTEXT, execution.span) : ROOT_CONTEXT
       const span = this.tracer?.startSpan("chat", { kind: SpanKind.CLIENT, startTime: event.created, attributes: { "gen_ai.operation.name": "chat", "opencode.model.kind": "compaction" } }, parent)
       this.compactions.set(session, { started: event.created, execution, model: { started: event.created, span, provider: "unknown", model: "unknown", retries: 0, retryEvents: new Set() } })
+      for (const [key, value] of this.pendingContent) if (key.startsWith(`compaction:${session}:`)) { this.attachContent(span, value.content); this.pendingContent.delete(key); break }
       const terminal = this.takeTerminal<CompactionEvent>(`compaction:${session}`, event.created)
       if (terminal) this.onCompactionEvent(terminal)
       return
@@ -325,10 +368,18 @@ export class ExecutionTelemetry {
       compaction.model.span?.setAttribute("gen_ai.request.model", model.id)
     }
     compaction.execution && compaction.execution.inferenceCalls++
+    if (this.privacy?.options.outputMessages && event.type === "session.compaction.ended" && typeof event.data.text === "string") {
+      this.attachContent(compaction.model.span, { "gen_ai.output.messages": this.privacy.bound([{ role: "assistant", parts: [{ type: "text", content: this.privacy.text(event.data.text) }], finish_reason: "stop" }]) })
+    }
     this.finishModel(compaction.model, event.created, event.type === "session.compaction.failed", event.data)
   }
 
-  private finishModel(step: ModelState, ended: number, failed: boolean, data: { error?: { type: string }; tokens?: ModelEvent["data"]["tokens"]; cost?: number }): void {
+  private finishModel(step: ModelState, ended: number, failed: boolean, data: { error?: { type: string }; tokens?: ModelEvent["data"]["tokens"]; cost?: number; finish?: string }): void {
+    if (step.outputParts?.size && this.privacy) {
+      const reason = failed ? "error" : typeof data.finish === "string" && /^[a-z_]{1,32}$/.test(data.finish) ? data.finish : "unknown"
+      const parts = [...step.outputParts].sort(([a], [b]) => a - b).map(([, content]) => ({ type: "text", content }))
+      this.attachContent(step.span, { "gen_ai.output.messages": this.privacy.bound([{ role: "assistant", parts, finish_reason: reason }]) })
+    }
     step.span?.setAttribute("gen_ai.provider.name", step.provider)
     const dimensions = { "gen_ai.operation.name": "chat", "gen_ai.provider.name": step.provider }
     const attrs = { ...dimensions, "error.type": failed ? safeErrorType(data.error?.type) : undefined }
@@ -363,7 +414,7 @@ export class ExecutionTelemetry {
       safe = { id: source.id, created: source.created, type: source.type, data: { sessionID: source.data.sessionID, assistantMessageID: source.data.assistantMessageID, tokens: safeTokens(source.data.tokens), cost: source.data.cost, error: source.data.error ? { type: safeErrorType(source.data.error.type), message: "" } : undefined } }
     } else {
       const source = event as CompactionEvent
-      safe = { id: source.id, created: source.created, type: source.type, data: { sessionID: source.data.sessionID, reason: source.data.reason, model: source.data.model && { id: source.data.model.id, providerID: source.data.model.providerID }, tokens: safeTokens(source.data.tokens), cost: source.data.cost, error: source.data.error ? { type: safeErrorType(source.data.error.type), message: "" } : undefined } }
+      safe = { id: source.id, created: source.created, type: source.type, data: { sessionID: source.data.sessionID, reason: source.data.reason, model: source.data.model && { id: source.data.model.id, providerID: source.data.model.providerID }, tokens: safeTokens(source.data.tokens), cost: source.data.cost, text: this.privacy?.options.outputMessages && typeof source.data.text === "string" ? this.privacy.text(source.data.text) : undefined, error: source.data.error ? { type: safeErrorType(source.data.error.type), message: "" } : undefined } }
     }
     const old = this.pendingTerminals.get(key)
     if (old) {
@@ -418,6 +469,7 @@ export class ExecutionTelemetry {
     this.compactionSeen.clear()
     this.parents.clear()
     this.pendingTerminals.clear()
+    this.pendingContent.clear()
     this.active.clear()
     this.seen.clear()
   }
@@ -544,7 +596,8 @@ export function createTelemetry(config: Config, version: string, exporters: Expo
   const resource = resourceFromAttributes({ "service.name": "opencode", "service.version": version, "service.instance.id": instanceID })
   const traces = exporters.traces ? new BasicTracerProvider({ resource, spanProcessors: [new BatchSpanProcessor(exporters.traces, { maxQueueSize: config.traces?.batchQueueSize ?? 2048, maxExportBatchSize: config.traces?.batchMaxSize ?? 512, scheduledDelayMillis: config.traces?.batchDelayMillis ?? 5000, exportTimeoutMillis: config.traces?.batchTimeoutMillis ?? 30000 })] }) : undefined
   const metrics = exporters.metrics ? new MeterProvider({ resource, readers: [new PeriodicExportingMetricReader({ exporter: exporters.metrics, exportIntervalMillis: config.metrics?.exportIntervalMillis ?? 60000, exportTimeoutMillis: config.metrics?.metricTimeoutMillis ?? 30000 })] }) : undefined
-  const execution = new ExecutionTelemetry(traces?.getTracer("opencode-otel"), metrics?.getMeter("opencode-otel"), now, config.providerNames, config.executionExpiryMillis)
+  const captureEnabled = Object.entries(config.capture).some(([key, value]) => !key.startsWith("redact") && value === true)
+  const execution = new ExecutionTelemetry(traces?.getTracer("opencode-otel"), metrics?.getMeter("opencode-otel"), now, config.providerNames, config.executionExpiryMillis, captureEnabled ? new PrivacyPipeline(config.capture) : undefined)
   const cleanup = setInterval(() => { try { execution.expire() } catch { /* fail open */ } }, Math.min(config.executionExpiryMillis, 60_000))
   cleanup.unref?.()
   return {

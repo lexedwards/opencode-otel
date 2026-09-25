@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs"
+import type { CaptureOptions } from "./privacy"
 
 export type Protocol = "http/protobuf" | "http/json" | "grpc"
 export type Signal = "traces" | "metrics"
@@ -18,10 +19,10 @@ export type SignalOptions = {
   exportIntervalMillis?: number
   metricTimeoutMillis?: number
 }
-export type Options = SignalOptions & { traces?: SignalOptions; metrics?: SignalOptions; providerNames?: Record<string, string>; executionExpiryMillis?: number; propagateTraceContext?: boolean }
+export type Options = SignalOptions & { traces?: SignalOptions; metrics?: SignalOptions; providerNames?: Record<string, string>; executionExpiryMillis?: number; propagateTraceContext?: boolean; capture?: Partial<CaptureOptions> }
 export type SignalConfig = Required<Pick<SignalOptions, "endpoint" | "protocol" | "headers" | "timeoutMillis" | "compression">> &
   Pick<SignalOptions, "certificate" | "clientCertificate" | "clientKey" | "batchQueueSize" | "batchMaxSize" | "batchDelayMillis" | "batchTimeoutMillis" | "exportIntervalMillis" | "metricTimeoutMillis">
-export type Config = { traces?: SignalConfig; metrics?: SignalConfig; providerNames?: Record<string, string>; executionExpiryMillis: number; propagateTraceContext: boolean; diagnostics: string[] }
+export type Config = { traces?: SignalConfig; metrics?: SignalConfig; providerNames?: Record<string, string>; executionExpiryMillis: number; propagateTraceContext: boolean; capture: CaptureOptions; diagnostics: string[] }
 type Environment = Record<string, string | undefined>
 type PrivateOptions = Pick<SignalConfig, "headers" | "certificate" | "clientCertificate" | "clientKey">
 const secrets = new WeakMap<SignalConfig, PrivateOptions>()
@@ -153,7 +154,25 @@ function resolveSignal(signal: Signal, options: Record<string, unknown>, env: En
 }
 
 export function resolveConfig(options: unknown, env: Environment = process.env): Config {
-  const config: Config = { diagnostics: [], executionExpiryMillis: 24 * 60 * 60_000, propagateTraceContext: false }
+  const umbrella = env.OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT?.toLowerCase() === "true"
+  const config: Config = { diagnostics: [], executionExpiryMillis: 24 * 60 * 60_000, propagateTraceContext: false, capture: { inputMessages: umbrella, outputMessages: umbrella, systemInstructions: umbrella, toolDefinitions: umbrella, redactKeys: [], redactPatterns: [] } }
+  try {
+    const capture = record(record(options).capture)
+    for (const key of ["inputMessages", "outputMessages", "systemInstructions", "toolDefinitions"] as const) {
+      if (capture[key] === undefined) continue
+      if (typeof capture[key] !== "boolean") throw Error("capture")
+      config.capture[key] = capture[key]
+    }
+    for (const key of ["redactKeys", "redactPatterns"] as const) {
+      if (capture[key] === undefined) continue
+      if (!Array.isArray(capture[key]) || !capture[key].every((item) => typeof item === "string" && item.length <= 256) || capture[key].length > 64) throw Error("capture")
+      config.capture[key] = [...capture[key]]
+    }
+    for (const expression of config.capture.redactPatterns) new RegExp(expression, "gu")
+  } catch {
+    config.capture = { inputMessages: false, outputMessages: false, systemInstructions: false, toolDefinitions: false, redactKeys: [], redactPatterns: [] }
+    config.diagnostics.push("Content capture settings invalid; capture disabled")
+  }
   try {
     const raw = record(options).propagateTraceContext
     if (raw !== undefined) {
@@ -191,7 +210,7 @@ export type Registry = { current?: Config; users: number }
 export function createRegistry(): Registry { return { users: 0 } }
 
 export function establishConfig(registry: Registry, proposed: Config): { config: Config; diagnostic?: string; release: () => void } {
-  const fingerprint = (config: Config) => JSON.stringify([config.traces, config.metrics, config.providerNames, config.executionExpiryMillis, config.propagateTraceContext, config.traces && exporterSecrets(config.traces), config.metrics && exporterSecrets(config.metrics)])
+  const fingerprint = (config: Config) => JSON.stringify([config.traces, config.metrics, config.providerNames, config.executionExpiryMillis, config.propagateTraceContext, config.capture, config.traces && exporterSecrets(config.traces), config.metrics && exporterSecrets(config.metrics)])
   const diagnostic = registry.current && fingerprint(registry.current) !== fingerprint(proposed)
     ? "Effective exporter configuration conflicts with an active instance; restart the OpenCode service to apply changes"
     : undefined

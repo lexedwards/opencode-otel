@@ -59,15 +59,32 @@ export default Plugin.define({
           propagationFailure()
         }
       }
+      if (Object.entries(instance.config.capture).some(([key, value]) => !key.startsWith("redact") && value === true)) {
+        const registrations: { dispose(): Promise<void> }[] = []
+        try {
+          registrations.push(await ctx.session.hook("context", (event) => {
+            try { pipeline?.execution.captureContext(event, "primary") } catch { /* fail open */ }
+          }))
+          registrations.push(await ctx.session.hook("compaction", (event) => {
+            try { pipeline?.execution.captureContext(event, "compaction") } catch { /* fail open */ }
+          }))
+          hooks.push(...registrations)
+        } catch {
+          for (const registration of registrations) { try { await registration.dispose() } catch { /* fail open */ } }
+          console.info("[opencode-otel] Content capture hooks unavailable; capture disabled")
+        }
+      }
       void (async () => {
         try {
           for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
-            if (typeof event.type !== "string" || !(event.type.startsWith("session.execution.") || event.type.startsWith("session.step.") || ["session.compaction.started", "session.compaction.ended", "session.compaction.failed"].includes(event.type) || event.type === "session.retry.scheduled" || event.type === "session.created" || event.type === "session.forked" || event.type === "permission.asked" || event.type === "permission.replied")) continue
+            const eventType: string = event.type
+            if (!(eventType.startsWith("session.execution.") || eventType.startsWith("session.step.") || ["session.compaction.started", "session.compaction.ended", "session.compaction.failed"].includes(eventType) || eventType === "session.retry.scheduled" || eventType === "session.created" || eventType === "session.forked" || eventType === "session.text.ended" || eventType === "permission.asked" || eventType === "permission.replied")) continue
             if (event.location?.directory && event.location.directory !== ctx.location.directory) continue
             try {
               if (event.type.startsWith("session.execution.")) pipeline?.execution.onEvent(event as ExecutionEvent, ctx.location.project.id)
               else if (event.type === "session.created" || event.type === "session.forked") pipeline?.execution.onSessionRelation(event as SessionRelationEvent)
               else if (event.type.startsWith("permission.")) pipeline?.execution.onPermissionEvent(event as PermissionEvent)
+              else if (eventType === "session.text.ended") pipeline?.execution.onTextEnded(event as { type: "session.text.ended"; data: { sessionID: string; assistantMessageID: string; ordinal: number; text: string } })
               else if (event.type.startsWith("session.compaction.")) pipeline?.execution.onCompactionEvent(event as CompactionEvent)
               else pipeline?.execution.onModelEvent(event as ModelEvent)
             } catch { /* fail open */ }

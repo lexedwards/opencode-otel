@@ -1,6 +1,6 @@
 # opencode-otel
 
-Unofficial community OpenCode plugin for privacy-conscious OpenTelemetry traces and metrics. **Work in progress:** HTTP/protobuf, HTTP/JSON, and experimental gRPC export agent-execution, tool, model and permission telemetry. Content-capture instrumentation is still being developed.
+Unofficial community OpenCode plugin for privacy-conscious OpenTelemetry traces and metrics. **Work in progress:** HTTP/protobuf, HTTP/JSON, and experimental gRPC export agent-execution, tool, model and permission telemetry, with opt-in model content capture.
 
 ## Install from Git
 
@@ -56,6 +56,8 @@ Optional `executionExpiryMillis` sets the maximum time active execution/compacti
 
 Optional `propagateTraceContext: true` injects W3C `traceparent` and, when present, `tracestate` into supported provider HTTP requests and experimental WebSocket handshakes during active primary model calls or compaction. It is off by default. An existing caller-supplied W3C header takes precedence; unsupported requests and failed injection continue unchanged. Propagation discloses trace identifiers to the provider and may invalidate signed requests if headers are included in the signature. See [propagation policy](docs/provider-propagation.md).
 
+Optional `capture` enables individual model-content categories and redaction rules; the standard GenAI capture environment variable enables all categories unless explicitly overridden. Model content is off by default and subject to strict text and attribute limits. See [model content capture](docs/content-capture.md).
+
 ```mermaid
 flowchart LR
     options[Plugin options] --> resolve[Resolve per signal]
@@ -69,6 +71,6 @@ flowchart LR
     activation -- Yes --> established[Retain first active process configuration]
 ```
 
-The exporter package capability matrix and Bun limitations are in [docs/otlp-compatibility.md](docs/otlp-compatibility.md). Agent telemetry observes durable execution events; tool telemetry uses before/after hooks and records `gen_ai.execute_tool.duration` and `gen_ai.invoke_agent.tool_calls`. Tool and model spans are direct children of their agent span. [Model telemetry](docs/model-telemetry.md) describes usage, latency, retry, cost, and provider mapping. [Permission telemetry](docs/permission-telemetry.md) describes request/reply events and wait metrics. It attaches no prompt, response, file path, error message, tool arguments, or tool results. Standard `OTEL_TRACES_SAMPLER` and `OTEL_TRACES_SAMPLER_ARG` settings are honored independently of metric collection. Tests run with `bun test` and `bun run typecheck`; they do not start OpenCode or a Collector.
+The exporter package capability matrix and Bun limitations are in [docs/otlp-compatibility.md](docs/otlp-compatibility.md). Agent telemetry observes durable execution events; tool telemetry uses before/after hooks and records `gen_ai.execute_tool.duration` and `gen_ai.invoke_agent.tool_calls`. Tool and model spans are direct children of their agent span. [Model telemetry](docs/model-telemetry.md) describes usage, latency, retry, cost, and provider mapping. [Permission telemetry](docs/permission-telemetry.md) describes request/reply events and wait metrics. By default, it attaches no prompt, response, file path, error message, tool arguments, or tool results; selected model content is captured only through explicit opt-in. Standard `OTEL_TRACES_SAMPLER` and `OTEL_TRACES_SAMPLER_ARG` settings are honored independently of metric collection. Tests run with `bun test` and `bun run typecheck`; they do not start OpenCode or a Collector.
 
 Licensed under Apache-2.0.

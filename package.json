@@ -24,5 +24,5 @@
     "@opentelemetry/exporter-trace-otlp-grpc": "0.222.0",
     "@opentelemetry/exporter-metrics-otlp-grpc": "0.222.0"
   },
-  "devDependencies": { "@types/bun": "latest", "typescript": "~5.9.3" }
+  "devDependencies": { "@types/bun": "latest", "ajv": "8.17.1", "typescript": "~5.9.3" }
 }

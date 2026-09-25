@@ -87,3 +87,43 @@ test("provider request hooks are opt-in, propagate an active model context, and 
     expect(registered.size).toBe(0)
   } finally { diagnostics.mockRestore(); exportSpans.mockRestore() }
 })
+
+test("opted-in context and completed text hooks attach content through the plugin", async () => {
+  const callbacks = new Map<string, (event: any) => void>()
+  const exported: Array<{ name: string; attributes: Record<string, unknown> }> = []
+  const exportSpans = spyOn(OTLPTraceExporter.prototype, "export").mockImplementation((spans, done) => {
+    exported.push(...spans.map((span) => ({ name: span.name, attributes: span.attributes })))
+    done({ code: 0 })
+  })
+  let advance!: () => void
+  const gate = new Promise<void>((resolve) => { advance = resolve })
+  const ctx = {
+    app: { version: "2.0.16" },
+    options: { traces: { endpoint: "https://collector.test/v1/traces" }, capture: { inputMessages: true, outputMessages: true } },
+    location: { directory: "/workspace", project: { id: "project" } },
+    tool: { async hook() { return { async dispose() {} } } },
+    session: { async hook(name: string, callback: (event: any) => void) { callbacks.set(name, callback); return { async dispose() { callbacks.delete(name) } } } },
+    event: { subscribe() { return { async *[Symbol.asyncIterator]() {
+      yield { type: "session.execution.started", id: "root", created: 1000, data: { sessionID: "session" } }
+      await gate
+      yield { type: "session.step.started", id: "step", created: 1100, data: { sessionID: "session", assistantMessageID: "msg", model: { id: "model", providerID: "openai" } } }
+      yield { type: "session.text.ended", id: "text", created: 1200, data: { sessionID: "session", assistantMessageID: "msg", ordinal: 0, text: "private response" } }
+      yield { type: "session.step.ended", id: "end", created: 1300, data: { sessionID: "session", assistantMessageID: "msg" } }
+      yield { type: "session.execution.succeeded", id: "root-end", created: 1400, data: { sessionID: "session" } }
+    } } } },
+  } as unknown as Plugin.Context
+  try {
+    const cleanup = await plugin.setup(ctx)
+    try {
+      expect([...callbacks.keys()].sort()).toEqual(["compaction", "context"])
+      for (let i = 0; i < 8; i++) await Promise.resolve()
+      callbacks.get("context")!({ sessionID: "session", model: { id: "model", providerID: "openai" }, system: [], tools: {}, messages: [{ role: "user", content: [{ type: "text", text: "private request" }] }] })
+      advance()
+      for (let i = 0; i < 16; i++) await Promise.resolve()
+    } finally { if (cleanup) await cleanup() }
+    expect(exported.find((span) => span.name === "chat model")?.attributes["gen_ai.input.messages"]).toContain("private request")
+    expect(exported.find((span) => span.name === "chat model")?.attributes["gen_ai.output.messages"]).toContain("private response")
+    expect(JSON.stringify(exported.find((span) => span.name === "invoke_agent")?.attributes)).not.toContain("private")
+    expect(callbacks.size).toBe(0)
+  } finally { advance(); exportSpans.mockRestore() }
+})
