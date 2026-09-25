@@ -5,8 +5,10 @@ import { BasicTracerProvider, BatchSpanProcessor, type SpanExporter } from "@ope
 import { MeterProvider, PeriodicExportingMetricReader, type PushMetricExporter } from "@opentelemetry/sdk-metrics"
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-proto"
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-proto"
+import { OTLPTraceExporter as JsonTraceExporter } from "@opentelemetry/exporter-trace-otlp-http"
+import { OTLPMetricExporter as JsonMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http"
 import { CompressionAlgorithm } from "@opentelemetry/otlp-exporter-base"
-import type { Config, SignalConfig } from "./config"
+import { exporterSecrets, type Config, type SignalConfig } from "./config"
 
 export type ExecutionEvent = {
   id: string
@@ -221,7 +223,16 @@ function safeErrorType(type?: string): string {
 }
 
 export type Exporters = { traces?: SpanExporter; metrics?: PushMetricExporter }
-export function makeExporters(config: Config): Exporters {
+type HttpOptions = NonNullable<ConstructorParameters<typeof OTLPTraceExporter>[0]>
+type Factories = {
+  traces: Record<"http/protobuf" | "http/json", (options: HttpOptions) => SpanExporter & { forceFlush(): Promise<void> }>
+  metrics: Record<"http/protobuf" | "http/json", (options: HttpOptions) => PushMetricExporter & { selectAggregationTemporality: NonNullable<PushMetricExporter["selectAggregationTemporality"]> }>
+}
+const httpFactories: Factories = {
+  traces: { "http/protobuf": (options) => new OTLPTraceExporter(options), "http/json": (options) => new JsonTraceExporter(options) },
+  metrics: { "http/protobuf": (options) => new OTLPMetricExporter(options), "http/json": (options) => new JsonMetricExporter(options) },
+}
+export function makeExporters(config: Config, factories: Factories = httpFactories): Exporters {
   const result: Exporters = {}
   let lastFailure = 0
   const diagnostic = () => {
@@ -229,15 +240,15 @@ export function makeExporters(config: Config): Exporters {
     lastFailure = Date.now()
     console.info("[opencode-otel] OTLP export failed; telemetry may be dropped")
   }
-  const options = (signal: SignalConfig) => ({
+  const options = (signal: SignalConfig): HttpOptions => ({
     url: signal.endpoint,
-    headers: signal.headers,
+    headers: exporterSecrets(signal).headers,
     timeoutMillis: signal.timeoutMillis,
     compression: signal.compression === "gzip" ? CompressionAlgorithm.GZIP : CompressionAlgorithm.NONE,
-    ...(signal.certificate || signal.clientCertificate ? { httpAgentOptions: { ca: signal.certificate, cert: signal.clientCertificate, key: signal.clientKey } } : {}),
+    httpAgentOptions: { keepAlive: true, ca: exporterSecrets(signal).certificate, cert: exporterSecrets(signal).clientCertificate, key: exporterSecrets(signal).clientKey },
   })
-  if (config.traces?.protocol === "http/protobuf") {
-    const exporter = new OTLPTraceExporter(options(config.traces))
+  if (config.traces?.protocol === "http/protobuf" || config.traces?.protocol === "http/json") {
+    const exporter = factories.traces[config.traces.protocol]!(options(config.traces))
     result.traces = {
       export(spans, callback) {
         try { exporter.export(spans, (result) => { if (result.code !== 0) diagnostic(); callback(result) }) }
@@ -247,8 +258,8 @@ export function makeExporters(config: Config): Exporters {
       forceFlush: () => exporter.forceFlush(),
     }
   }
-  if (config.metrics?.protocol === "http/protobuf") {
-    const exporter = new OTLPMetricExporter(options(config.metrics))
+  if (config.metrics?.protocol === "http/protobuf" || config.metrics?.protocol === "http/json") {
+    const exporter = factories.metrics[config.metrics.protocol]!(options(config.metrics))
     result.metrics = {
       export(metrics, callback) {
         try { exporter.export(metrics, (result) => { if (result.code !== 0) diagnostic(); callback(result) }) }
@@ -265,8 +276,8 @@ export function makeExporters(config: Config): Exporters {
 const instanceID = randomUUID()
 export function createTelemetry(config: Config, version: string, exporters: Exporters = makeExporters(config), shutdownTimeoutMillis = 5000, now: () => number = Date.now) {
   const resource = resourceFromAttributes({ "service.name": "opencode", "service.version": version, "service.instance.id": instanceID })
-  const traces = exporters.traces ? new BasicTracerProvider({ resource, spanProcessors: [new BatchSpanProcessor(exporters.traces, { maxQueueSize: 2048, maxExportBatchSize: 512 })] }) : undefined
-  const metrics = exporters.metrics ? new MeterProvider({ resource, readers: [new PeriodicExportingMetricReader({ exporter: exporters.metrics })] }) : undefined
+  const traces = exporters.traces ? new BasicTracerProvider({ resource, spanProcessors: [new BatchSpanProcessor(exporters.traces, { maxQueueSize: config.traces?.batchQueueSize ?? 2048, maxExportBatchSize: config.traces?.batchMaxSize ?? 512, scheduledDelayMillis: config.traces?.batchDelayMillis ?? 5000, exportTimeoutMillis: config.traces?.batchTimeoutMillis ?? 30000 })] }) : undefined
+  const metrics = exporters.metrics ? new MeterProvider({ resource, readers: [new PeriodicExportingMetricReader({ exporter: exporters.metrics, exportIntervalMillis: config.metrics?.exportIntervalMillis ?? 60000, exportTimeoutMillis: config.metrics?.metricTimeoutMillis ?? 30000 })] }) : undefined
   const execution = new ExecutionTelemetry(traces?.getTracer("opencode-otel"), metrics?.getMeter("opencode-otel"), now, config.providerNames)
   return {
     execution,

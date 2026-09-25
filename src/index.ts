@@ -13,9 +13,9 @@ export default Plugin.define({
     for (const diagnostic of proposed.diagnostics) console.info(`[opencode-otel] ${diagnostic}`)
     if (instance.diagnostic) console.info(`[opencode-otel] ${instance.diagnostic}`)
     for (const signal of ["traces", "metrics"] as const) {
-      if (instance.config[signal] && instance.config[signal].protocol !== "http/protobuf") console.info(`[opencode-otel] ${signal} transport is not implemented yet; signal disabled`)
+      if (instance.config[signal] && instance.config[signal].protocol === "grpc") console.info(`[opencode-otel] ${signal} transport is not implemented yet; signal disabled`)
     }
-    if (!pipeline && (instance.config.traces?.protocol === "http/protobuf" || instance.config.metrics?.protocol === "http/protobuf")) {
+    if (!pipeline && ([instance.config.traces?.protocol, instance.config.metrics?.protocol].some((protocol) => protocol?.startsWith("http/")))) {
       try {
         pipeline = createTelemetry(instance.config, ctx.app.version)
       } catch {

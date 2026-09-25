@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs"
+
 export type Protocol = "http/protobuf" | "http/json" | "grpc"
 export type Signal = "traces" | "metrics"
 export type SignalOptions = {
@@ -9,12 +11,21 @@ export type SignalOptions = {
   certificate?: string
   clientCertificate?: string
   clientKey?: string
+  batchQueueSize?: number
+  batchMaxSize?: number
+  batchDelayMillis?: number
+  batchTimeoutMillis?: number
+  exportIntervalMillis?: number
+  metricTimeoutMillis?: number
 }
 export type Options = SignalOptions & { traces?: SignalOptions; metrics?: SignalOptions; providerNames?: Record<string, string> }
 export type SignalConfig = Required<Pick<SignalOptions, "endpoint" | "protocol" | "headers" | "timeoutMillis" | "compression">> &
-  Pick<SignalOptions, "certificate" | "clientCertificate" | "clientKey">
+  Pick<SignalOptions, "certificate" | "clientCertificate" | "clientKey" | "batchQueueSize" | "batchMaxSize" | "batchDelayMillis" | "batchTimeoutMillis" | "exportIntervalMillis" | "metricTimeoutMillis">
 export type Config = { traces?: SignalConfig; metrics?: SignalConfig; providerNames?: Record<string, string>; diagnostics: string[] }
 type Environment = Record<string, string | undefined>
+type PrivateOptions = Pick<SignalConfig, "headers" | "certificate" | "clientCertificate" | "clientKey">
+const secrets = new WeakMap<SignalConfig, PrivateOptions>()
+export function exporterSecrets(signal: SignalConfig): PrivateOptions { return secrets.get(signal) ?? { headers: {} } }
 
 function record(value: unknown): Record<string, unknown> {
   if (value === undefined) return {}
@@ -39,18 +50,21 @@ function secret(value: unknown, field: string, env: Environment): string | undef
 }
 
 function headers(value: unknown, env: Environment, fromOptions: boolean): Record<string, string> {
+  const name = (key: string): string => {
+    if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(key)) throw Error("header")
+    return key.toLowerCase()
+  }
   if (value === undefined) return {}
   if (!fromOptions && typeof value === "string") {
     return Object.fromEntries(value.split(",").filter(Boolean).map((pair) => {
       const i = pair.indexOf("=")
       if (i < 1) throw Error("header")
-      return [decodeURIComponent(pair.slice(0, i).trim()), decodeURIComponent(pair.slice(i + 1).trim())]
+      return [name(decodeURIComponent(pair.slice(0, i).trim())), decodeURIComponent(pair.slice(i + 1).trim())]
     }))
   }
   const obj = record(value)
   return Object.fromEntries(Object.entries(obj).map(([key, raw]) => {
-    if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(key)) throw Error("header")
-    return [key, secret(raw, "header", env)!]
+    return [name(key), secret(raw, "header", env)!]
   }))
 }
 
@@ -92,16 +106,50 @@ function resolveSignal(signal: Signal, options: Record<string, unknown>, env: En
   const resolvedClientCertificate = clientCertificate === undefined ? undefined : scoped.clientCertificate !== undefined || options.clientCertificate !== undefined ? secret(clientCertificate, "client certificate", env) : text(clientCertificate, "client certificate")
   const resolvedClientKey = clientKey === undefined ? undefined : scoped.clientKey !== undefined || options.clientKey !== undefined ? secret(clientKey, "client key", env) : text(clientKey, "client key")
   if (rawEndpoint === undefined) return undefined
-  return {
+  const pem = (value: string | undefined, fromOption: boolean): string | undefined => {
+    if (value === undefined) return undefined
+    if (fromOption) return value
+    try { return readFileSync(value, "utf8") } catch { throw Error("certificate file") }
+  }
+  const privateOptions: PrivateOptions = {
+    headers: mergedHeaders,
+    certificate: pem(resolvedCertificate, scoped.certificate !== undefined || options.certificate !== undefined),
+    clientCertificate: pem(resolvedClientCertificate, scoped.clientCertificate !== undefined || options.clientCertificate !== undefined),
+    clientKey: pem(resolvedClientKey, scoped.clientKey !== undefined || options.clientKey !== undefined),
+  }
+  if ([privateOptions.certificate, privateOptions.clientCertificate].some((value) => value !== undefined && !/-----BEGIN CERTIFICATE-----[\s\S]+-----END CERTIFICATE-----/.test(value))) throw Error("certificate")
+  if (privateOptions.clientKey !== undefined && !/-----BEGIN (?:RSA |EC |ENCRYPTED )?PRIVATE KEY-----[\s\S]+-----END (?:RSA |EC |ENCRYPTED )?PRIVATE KEY-----/.test(privateOptions.clientKey)) throw Error("client key")
+  if (protocol !== "grpc" && (privateOptions.certificate || privateOptions.clientCertificate) && !String(rawEndpoint).startsWith("https://")) throw Error("certificate")
+  const positive = (value: unknown, field: string): number => {
+    const result = Number(value)
+    if (!Number.isSafeInteger(result) || result <= 0) throw Error(field)
+    return result
+  }
+  const batchQueueSize = signal === "traces" ? positive(scoped.batchQueueSize ?? options.batchQueueSize ?? env.OTEL_BSP_MAX_QUEUE_SIZE ?? 2048, "batch queue") : undefined
+  const batchMaxSize = signal === "traces" ? positive(scoped.batchMaxSize ?? options.batchMaxSize ?? env.OTEL_BSP_MAX_EXPORT_BATCH_SIZE ?? 512, "batch size") : undefined
+  if (batchQueueSize !== undefined && batchMaxSize !== undefined && batchMaxSize > batchQueueSize) throw Error("batch size")
+  const batchDelayMillis = signal === "traces" ? positive(scoped.batchDelayMillis ?? options.batchDelayMillis ?? env.OTEL_BSP_SCHEDULE_DELAY ?? 5000, "batch delay") : undefined
+  const batchTimeoutMillis = signal === "traces" ? positive(scoped.batchTimeoutMillis ?? options.batchTimeoutMillis ?? env.OTEL_BSP_EXPORT_TIMEOUT ?? 30000, "batch timeout") : undefined
+  const exportIntervalMillis = signal === "metrics" ? positive(scoped.exportIntervalMillis ?? options.exportIntervalMillis ?? env.OTEL_METRIC_EXPORT_INTERVAL ?? 60000, "metric interval") : undefined
+  const metricTimeoutMillis = signal === "metrics" ? positive(scoped.metricTimeoutMillis ?? options.metricTimeoutMillis ?? env.OTEL_METRIC_EXPORT_TIMEOUT ?? 30000, "metric timeout") : undefined
+  const config: SignalConfig = {
     endpoint: endpoint(rawEndpoint, "endpoint", isGenericEndpoint, signal, protocol),
     protocol,
-    headers: mergedHeaders,
+    headers: Object.fromEntries(Object.keys(mergedHeaders).map((key) => [key, "[redacted]"])),
     timeoutMillis,
     compression,
-    certificate: resolvedCertificate,
-    clientCertificate: resolvedClientCertificate,
-    clientKey: resolvedClientKey,
+    certificate: privateOptions.certificate === undefined ? undefined : "[redacted]",
+    clientCertificate: privateOptions.clientCertificate === undefined ? undefined : "[redacted]",
+    clientKey: privateOptions.clientKey === undefined ? undefined : "[redacted]",
+    batchQueueSize,
+    batchMaxSize,
+    batchDelayMillis,
+    batchTimeoutMillis,
+    exportIntervalMillis,
+    metricTimeoutMillis,
   }
+  secrets.set(config, privateOptions)
+  return config
 }
 
 export function resolveConfig(options: unknown, env: Environment = process.env): Config {
@@ -129,7 +177,8 @@ export type Registry = { current?: Config; users: number }
 export function createRegistry(): Registry { return { users: 0 } }
 
 export function establishConfig(registry: Registry, proposed: Config): { config: Config; diagnostic?: string; release: () => void } {
-  const diagnostic = registry.current && JSON.stringify([registry.current.traces, registry.current.metrics, registry.current.providerNames]) !== JSON.stringify([proposed.traces, proposed.metrics, proposed.providerNames])
+  const fingerprint = (config: Config) => JSON.stringify([config.traces, config.metrics, config.providerNames, config.traces && exporterSecrets(config.traces), config.metrics && exporterSecrets(config.metrics)])
+  const diagnostic = registry.current && fingerprint(registry.current) !== fingerprint(proposed)
     ? "Effective exporter configuration conflicts with an active instance; restart the OpenCode service to apply changes"
     : undefined
   registry.current ??= proposed

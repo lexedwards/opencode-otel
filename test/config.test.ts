@@ -87,3 +87,32 @@ test("process configuration is fixed across instances until final cleanup", () =
   c.release()
   expect(establishConfig(registry, conflict).config).toBe(conflict)
 })
+
+test("HTTP secret references are resolved once without appearing in printable config", () => {
+  const env = { TOKEN: "Bearer private-token", CA: "-----BEGIN CERTIFICATE-----\nprivate-ca\n-----END CERTIFICATE-----", OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector.test" }
+  const config = resolveConfig({ traces: { headers: { Authorization: "{env:TOKEN}" }, certificate: "{env:CA}" } }, env)
+  expect(config.traces).toBeDefined()
+  expect(JSON.stringify(config)).not.toMatch(/private-token|private-ca|\{env:/)
+  env.TOKEN = "changed"
+  expect(JSON.stringify(config)).not.toContain("changed")
+  expect(config.metrics).toBeDefined()
+})
+
+test("standard HTTP controls resolve per signal and reject invalid batching", () => {
+  const config = resolveConfig({ endpoint: "https://collector.test", traces: { protocol: "http/json", batchMaxSize: 100 }, metrics: { exportIntervalMillis: 15000 } }, {
+    OTEL_EXPORTER_OTLP_HEADERS: "Authorization=Bearer%20secret,x-custom=one",
+    OTEL_EXPORTER_OTLP_TRACES_HEADERS: "x-custom=two",
+    OTEL_BSP_MAX_QUEUE_SIZE: "200",
+    OTEL_BSP_MAX_EXPORT_BATCH_SIZE: "150",
+    OTEL_BSP_SCHEDULE_DELAY: "7000",
+    OTEL_BSP_EXPORT_TIMEOUT: "25000",
+    OTEL_METRIC_EXPORT_INTERVAL: "12000",
+    OTEL_METRIC_EXPORT_TIMEOUT: "26000",
+  })
+  expect(config.traces).toMatchObject({ protocol: "http/json", batchMaxSize: 100, batchQueueSize: 200, batchDelayMillis: 7000, batchTimeoutMillis: 25000 })
+  expect(config.metrics).toMatchObject({ exportIntervalMillis: 15000, metricTimeoutMillis: 26000 })
+  expect(JSON.stringify(config)).not.toContain("Bearer secret")
+  const invalid = resolveConfig({ endpoint: "https://collector.test", traces: { batchMaxSize: 500, batchQueueSize: 100 } }, {})
+  expect(invalid.traces).toBeUndefined()
+  expect(invalid.metrics).toBeDefined()
+})
