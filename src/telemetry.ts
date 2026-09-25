@@ -39,9 +39,17 @@ export type ModelEvent = {
   }
 }
 
+export type PermissionEvent = {
+  id: string
+  created: number
+  type: "permission.asked" | "permission.replied"
+  location?: { directory?: string }
+  data: { sessionID: string; id?: string; action?: string; requestID?: string; reply?: "once" | "always" | "reject"; resources?: string[]; message?: string; metadata?: unknown; save?: string[] }
+}
+
 type ToolState = { started: number; span?: Span }
 type ModelState = { started: number; span?: Span; provider: string; model: string; firstChunk?: number; retries: number; retryEvents: Set<string> }
-type Active = { id: string; started: number; span?: Span; tools: Map<string, ToolState>; completedTools: Set<string>; toolCalls: number; models: Map<string, ModelState>; completedModels: Set<string>; inferenceCalls: number }
+type Active = { id: string; started: number; span?: Span; tools: Map<string, ToolState>; completedTools: Set<string>; toolCalls: number; models: Map<string, ModelState>; completedModels: Set<string>; inferenceCalls: number; permissions: Map<string, { started: number; action: string }>; completedPermissions: Set<string> }
 
 export type ToolEvent = { sessionID: string; id: string; tool: string; status?: "completed" | "error"; input?: unknown; result?: unknown; error?: unknown }
 
@@ -57,7 +65,11 @@ export class ExecutionTelemetry {
   private readonly inferenceCalls?: ReturnType<Meter["createHistogram"]>
   private readonly cost?: ReturnType<Meter["createCounter"]>
   private readonly retryCount?: ReturnType<Meter["createCounter"]>
+  private readonly permissionRequests?: ReturnType<Meter["createCounter"]>
+  private readonly permissionReplies?: ReturnType<Meter["createCounter"]>
+  private readonly permissionWait?: ReturnType<Meter["createHistogram"]>
   private lastDroppedDiagnostic = 0
+  private lastPermissionDiagnostic = 0
 
   constructor(private readonly tracer?: Tracer, meter?: Meter, private readonly now: () => number = Date.now, private readonly providerNames: Record<string, string> = {}) {
     this.histogram = meter?.createHistogram("gen_ai.invoke_agent.duration", { unit: "s", description: "Agent invocation duration" })
@@ -69,6 +81,9 @@ export class ExecutionTelemetry {
     this.inferenceCalls = meter?.createHistogram("gen_ai.invoke_agent.inference_calls", { unit: "{call}" })
     this.cost = meter?.createCounter("opencode.gen_ai.cost", { unit: "USD" })
     this.retryCount = meter?.createCounter("opencode.gen_ai.retry.count", { unit: "{retry}" })
+    this.permissionRequests = meter?.createCounter("opencode.permission.request.count", { unit: "{request}" })
+    this.permissionReplies = meter?.createCounter("opencode.permission.reply.count", { unit: "{reply}" })
+    this.permissionWait = meter?.createHistogram("opencode.permission.wait.duration", { unit: "s" })
   }
 
   onEvent(event: ExecutionEvent, projectID: string): void {
@@ -87,7 +102,7 @@ export class ExecutionTelemetry {
       const attributes: Record<string, string> = { "gen_ai.operation.name": "invoke_agent", "opencode.project.id": projectID }
       if (event.location?.workspaceID) attributes["opencode.workspace.id"] = event.location.workspaceID
       const span = this.tracer?.startSpan("invoke_agent", { kind: SpanKind.INTERNAL, attributes, startTime: event.created }, ROOT_CONTEXT)
-      this.active.set(session, { id: event.id, started: event.created, span, tools: new Map(), completedTools: new Set(), toolCalls: 0, models: new Map(), completedModels: new Set(), inferenceCalls: 0 })
+      this.active.set(session, { id: event.id, started: event.created, span, tools: new Map(), completedTools: new Set(), toolCalls: 0, models: new Map(), completedModels: new Set(), inferenceCalls: 0, permissions: new Map(), completedPermissions: new Set() })
       return
     }
     const execution = this.active.get(session)
@@ -117,6 +132,52 @@ export class ExecutionTelemetry {
       execution.span?.setStatus({ code: SpanStatusCode.ERROR })
     } else execution.span?.setStatus({ code: SpanStatusCode.OK })
     execution.span?.end(event.created)
+  }
+
+  onPermissionEvent(event: PermissionEvent): void {
+    const execution = this.active.get(event.data.sessionID)
+    if (!execution) return
+    const completed = execution.completedPermissions
+    const pending = execution.permissions
+    for (const [id, request] of pending) {
+      if (event.created - request.started < 30 * 60_000) continue
+      pending.delete(id)
+      completed.add(id)
+      this.permissionDiagnostic()
+    }
+    while (completed.size > 4096) completed.delete(completed.values().next().value!)
+    const id = event.type === "permission.asked" ? event.data.id : event.data.requestID
+    if (!id || completed.has(id)) return
+    if (event.type === "permission.asked") {
+      if (pending.has(id)) return
+      if (pending.size >= 2048) { this.permissionDiagnostic(); return }
+      const action = safePermissionAction(event.data.action)
+      pending.set(id, { started: event.created, action })
+      const attrs = { "opencode.permission.action": action }
+      execution.span?.addEvent("opencode.permission.asked", attrs, event.created)
+      this.permissionRequests?.add(1, attrs)
+      return
+    }
+    const request = pending.get(id)
+    if (!request) { this.permissionDiagnostic(); completed.add(id) }
+    else {
+      pending.delete(id)
+      completed.add(id)
+      const reply = event.data.reply
+      if (reply === "once" || reply === "always" || reply === "reject") {
+        const attrs = { "opencode.permission.action": request.action, "opencode.permission.reply": reply }
+        execution.span?.addEvent("opencode.permission.replied", attrs, event.created)
+        this.permissionReplies?.add(1, attrs)
+        this.permissionWait?.record(Math.max(0, (event.created - request.started) / 1000), attrs)
+      }
+    }
+    if (completed.size > 4096) completed.delete(completed.values().next().value!)
+  }
+
+  private permissionDiagnostic(): void {
+    if (Date.now() - this.lastPermissionDiagnostic < 60_000) return
+    this.lastPermissionDiagnostic = Date.now()
+    console.info("[opencode-otel] Permission telemetry event unmatched, expired, or capacity reached")
   }
 
   onModelEvent(event: ModelEvent): void {
@@ -218,6 +279,10 @@ export class ExecutionTelemetry {
 function providerName(id: string): string {
   const known: Record<string, string> = { "google-vertex": "gcp.vertex_ai", google: "gcp.gemini", "amazon-bedrock": "aws.bedrock", azure: "azure.ai.openai", mistral: "mistral_ai" }
   return Object.hasOwn(known, id) ? known[id] : id
+}
+
+function safePermissionAction(action?: string): string {
+  return action && new Set(["read", "edit", "shell", "webfetch", "task", "skill", "external_directory"]).has(action) ? action : "other"
 }
 
 function safeErrorType(type?: string): string {

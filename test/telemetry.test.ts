@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test"
+import { expect, test, spyOn } from "bun:test"
 import { trace, SpanKind, SpanStatusCode } from "@opentelemetry/api"
 import { InMemorySpanExporter, type SpanExporter } from "@opentelemetry/sdk-trace-base"
 import { AggregationTemporality, InMemoryMetricExporter } from "@opentelemetry/sdk-metrics"
@@ -198,5 +198,81 @@ test("provider override applies without changing unknown provider IDs", async ()
   pipeline.execution.onEvent(fixture("session.execution.succeeded", "end-override-root", 1500), "project")
   await pipeline.traces?.forceFlush()
   expect(spans.getFinishedSpans().find((span) => span.kind === SpanKind.CLIENT)?.attributes["gen_ai.provider.name"]).toBe("openai")
+  await pipeline.shutdown()
+})
+
+test("permission asks and decisions annotate agent root and measure wait without resources", async () => {
+  const spans = new InMemorySpanExporter()
+  const metrics = new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE)
+  const pipeline = createTelemetry(config, "2.0.16", { traces: spans, metrics })
+  pipeline.execution.onEvent(fixture("session.execution.started", "start-permission", 1000), "project")
+  pipeline.execution.onPermissionEvent({ id: "asked-1", created: 1200, type: "permission.asked", data: { id: "permission-1", sessionID: "session-1", action: "shell", resources: ["secret /private/path"], message: "secret" } })
+  pipeline.execution.onPermissionEvent({ id: "asked-1", created: 1200, type: "permission.asked", data: { id: "permission-1", sessionID: "session-1", action: "shell", resources: ["secret /private/path"] } })
+  pipeline.execution.onPermissionEvent({ id: "reply-1", created: 1700, type: "permission.replied", data: { requestID: "permission-1", sessionID: "session-1", reply: "reject" } })
+  pipeline.execution.onPermissionEvent({ id: "reply-1", created: 1700, type: "permission.replied", data: { requestID: "permission-1", sessionID: "session-1", reply: "reject" } })
+  pipeline.execution.onEvent(fixture("session.execution.failed", "end-permission", 1900), "project")
+  await pipeline.traces?.forceFlush()
+  await pipeline.metrics?.forceFlush()
+  const [root] = spans.getFinishedSpans()
+  expect(root?.events.map((event) => [event.name, event.attributes])).toEqual([
+    ["opencode.permission.asked", { "opencode.permission.action": "shell" }],
+    ["opencode.permission.replied", { "opencode.permission.action": "shell", "opencode.permission.reply": "reject" }],
+  ])
+  const data = metrics.getMetrics().flatMap((r) => r.scopeMetrics.flatMap((s) => s.metrics))
+  const metric = (name: string) => data.find((m) => m.descriptor.name === name)
+  expect(metric("opencode.permission.request.count")?.dataPoints[0]?.value).toBe(1)
+  expect(metric("opencode.permission.reply.count")?.dataPoints[0]?.value).toBe(1)
+  expect(metric("opencode.permission.wait.duration")?.dataPoints[0]?.value).toMatchObject({ sum: 0.5, count: 1 })
+  expect(metric("opencode.permission.reply.count")?.dataPoints[0]?.attributes).toMatchObject({ "opencode.permission.action": "shell", "opencode.permission.reply": "reject" })
+  expect(JSON.stringify({ events: root?.events, data })).not.toMatch(/secret|private|permission-1/)
+  await pipeline.shutdown()
+})
+
+test("permission telemetry bounds orphaned, expired and out-of-order events", async () => {
+  const spans = new InMemorySpanExporter()
+  const metrics = new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE)
+  const pipeline = createTelemetry(config, "2.0.16", { traces: spans, metrics })
+  pipeline.execution.onEvent(fixture("session.execution.started", "start-orphans", 1000), "project")
+  const diagnostic = spyOn(console, "info").mockImplementation(() => {})
+  const asked = (id: string, created: number, action = "unknown/private/path") => pipeline.execution.onPermissionEvent({ id: `ask-${id}`, created, type: "permission.asked", data: { id, sessionID: "session-1", action, resources: ["private path"], save: ["private glob"] } })
+  const replied = (id: string, created: number, reply: "once" | "always" | "reject" = "always") => pipeline.execution.onPermissionEvent({ id: `reply-${id}`, created, type: "permission.replied", data: { requestID: id, sessionID: "session-1", reply } })
+  replied("out-of-order", 1100)
+  asked("out-of-order", 1200)
+  asked("stale", 1300)
+  asked("live", 30 * 60_000 + 1400)
+  replied("stale", 30 * 60_000 + 1500)
+  replied("live", 30 * 60_000 + 1600)
+  replied("live", 30 * 60_000 + 1600)
+  expect(diagnostic.mock.calls).toHaveLength(1)
+  expect(JSON.stringify(diagnostic.mock.calls)).not.toMatch(/private|stale|live|out-of-order/)
+  diagnostic.mockRestore()
+  pipeline.execution.onEvent(fixture("session.execution.succeeded", "end-orphans", 30 * 60_000 + 1700), "project")
+  await pipeline.traces?.forceFlush()
+  await pipeline.metrics?.forceFlush()
+  expect(spans.getFinishedSpans()[0]?.events.map((event) => event.name)).toEqual(["opencode.permission.asked", "opencode.permission.asked", "opencode.permission.replied"])
+  const data = metrics.getMetrics().flatMap((r) => r.scopeMetrics.flatMap((s) => s.metrics))
+  const metric = (name: string) => data.find((m) => m.descriptor.name === name)
+  expect(metric("opencode.permission.request.count")?.dataPoints[0]?.value).toBe(2)
+  expect(metric("opencode.permission.reply.count")?.dataPoints[0]?.value).toBe(1)
+  expect(metric("opencode.permission.wait.duration")?.dataPoints[0]?.value).toMatchObject({ sum: 0.2, count: 1 })
+  expect(metric("opencode.permission.request.count")?.dataPoints[0]?.attributes).toEqual({ "opencode.permission.action": "other" })
+  expect(JSON.stringify({ events: spans.getFinishedSpans()[0]?.events, data })).not.toMatch(/private|stale|live|out-of-order/)
+  await pipeline.shutdown()
+})
+
+test("permission reply metric distinguishes once, always, and reject", async () => {
+  const metrics = new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE)
+  const pipeline = createTelemetry(config, "2.0.16", { metrics })
+  pipeline.execution.onEvent(fixture("session.execution.started", "start-decisions", 1000), "project")
+  for (const [index, reply] of (["once", "always", "reject"] as const).entries()) {
+    const requestID = `permission-${index}`
+    pipeline.execution.onPermissionEvent({ type: "permission.asked", id: `ask-${index}`, created: 1200, data: { sessionID: "session-1", id: requestID, action: "read" } })
+    pipeline.execution.onPermissionEvent({ type: "permission.replied", id: `reply-${index}`, created: 1300, data: { sessionID: "session-1", requestID, reply } })
+  }
+  pipeline.execution.onEvent(fixture("session.execution.succeeded", "end-decisions", 1500), "project")
+  await pipeline.metrics?.forceFlush()
+  const data = metrics.getMetrics().flatMap((r) => r.scopeMetrics.flatMap((s) => s.metrics))
+  const replies = data.find((m) => m.descriptor.name === "opencode.permission.reply.count")
+  expect(replies?.dataPoints.map((point) => [point.attributes["opencode.permission.reply"], point.value]).sort()).toEqual([["always", 1], ["once", 1], ["reject", 1]])
   await pipeline.shutdown()
 })

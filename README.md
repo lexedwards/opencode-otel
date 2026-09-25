@@ -1,6 +1,6 @@
 # opencode-otel
 
-Unofficial community OpenCode plugin for privacy-conscious OpenTelemetry traces and metrics. **Work in progress:** HTTP/protobuf, HTTP/JSON, and experimental gRPC export agent-execution, tool and primary model spans and metrics. Permission and content-capture instrumentation are still being developed.
+Unofficial community OpenCode plugin for privacy-conscious OpenTelemetry traces and metrics. **Work in progress:** HTTP/protobuf, HTTP/JSON, and experimental gRPC export agent-execution, tool, model and permission telemetry. Content-capture instrumentation is still being developed.
 
 ## Install from Git
 
@@ -65,6 +65,6 @@ flowchart LR
     activation -- Yes --> established[Retain first active process configuration]
 ```
 
-The exporter package capability matrix and Bun limitations are in [docs/otlp-compatibility.md](docs/otlp-compatibility.md). Agent telemetry observes durable execution events; tool telemetry uses before/after hooks and records `gen_ai.execute_tool.duration` and `gen_ai.invoke_agent.tool_calls`. Tool and model spans are direct children of their agent span. [Model telemetry](docs/model-telemetry.md) describes usage, latency, retry, cost, and provider mapping. It attaches no prompt, response, file path, error message, tool arguments, or tool results. Standard `OTEL_TRACES_SAMPLER` and `OTEL_TRACES_SAMPLER_ARG` settings are honored independently of metric collection. Tests run with `bun test` and `bun run typecheck`; they do not start OpenCode or a Collector.
+The exporter package capability matrix and Bun limitations are in [docs/otlp-compatibility.md](docs/otlp-compatibility.md). Agent telemetry observes durable execution events; tool telemetry uses before/after hooks and records `gen_ai.execute_tool.duration` and `gen_ai.invoke_agent.tool_calls`. Tool and model spans are direct children of their agent span. [Model telemetry](docs/model-telemetry.md) describes usage, latency, retry, cost, and provider mapping. [Permission telemetry](docs/permission-telemetry.md) describes request/reply events and wait metrics. It attaches no prompt, response, file path, error message, tool arguments, or tool results. Standard `OTEL_TRACES_SAMPLER` and `OTEL_TRACES_SAMPLER_ARG` settings are honored independently of metric collection. Tests run with `bun test` and `bun run typecheck`; they do not start OpenCode or a Collector.
 
 Licensed under Apache-2.0.

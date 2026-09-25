@@ -1,6 +1,6 @@
 import { Plugin } from "@opencode/plugin"
 import { createRegistry, establishConfig, resolveConfig } from "./config"
-import { createTelemetry, type ExecutionEvent, type ModelEvent } from "./telemetry"
+import { createTelemetry, type ExecutionEvent, type ModelEvent, type PermissionEvent } from "./telemetry"
 
 const registry = createRegistry()
 let pipeline: ReturnType<typeof createTelemetry> | undefined
@@ -33,10 +33,11 @@ export default Plugin.define({
       void (async () => {
         try {
           for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
-            if (typeof event.type !== "string" || !(event.type.startsWith("session.execution.") || event.type.startsWith("session.step.") || event.type === "session.retry.scheduled")) continue
+            if (typeof event.type !== "string" || !(event.type.startsWith("session.execution.") || event.type.startsWith("session.step.") || event.type === "session.retry.scheduled" || event.type === "permission.asked" || event.type === "permission.replied")) continue
             if (event.location?.directory && event.location.directory !== ctx.location.directory) continue
             try {
               if (event.type.startsWith("session.execution.")) pipeline?.execution.onEvent(event as ExecutionEvent, ctx.location.project.id)
+              else if (event.type.startsWith("permission.")) pipeline?.execution.onPermissionEvent(event as PermissionEvent)
               else pipeline?.execution.onModelEvent(event as ModelEvent)
             } catch { /* fail open */ }
           }
