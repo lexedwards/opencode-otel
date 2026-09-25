@@ -6,6 +6,13 @@ test("no endpoint means neither signal is enabled", () => {
   expect(config.traces).toBeUndefined()
   expect(config.metrics).toBeUndefined()
   expect(config.diagnostics).toEqual(["No OTLP endpoint configured; telemetry is inactive"])
+  expect(config.executionExpiryMillis).toBe(24 * 60 * 60_000)
+})
+
+test("invalid execution expiry falls back to the 24-hour default", () => {
+  const config = resolveConfig({ endpoint: "https://collector.test", executionExpiryMillis: -1 }, {})
+  expect(config.executionExpiryMillis).toBe(24 * 60 * 60_000)
+  expect(config.diagnostics).toContain("Execution expiry invalid; using 24-hour default")
 })
 
 test("signal-specific endpoints do not activate their sibling", () => {

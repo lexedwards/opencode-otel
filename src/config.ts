@@ -18,10 +18,10 @@ export type SignalOptions = {
   exportIntervalMillis?: number
   metricTimeoutMillis?: number
 }
-export type Options = SignalOptions & { traces?: SignalOptions; metrics?: SignalOptions; providerNames?: Record<string, string> }
+export type Options = SignalOptions & { traces?: SignalOptions; metrics?: SignalOptions; providerNames?: Record<string, string>; executionExpiryMillis?: number }
 export type SignalConfig = Required<Pick<SignalOptions, "endpoint" | "protocol" | "headers" | "timeoutMillis" | "compression">> &
   Pick<SignalOptions, "certificate" | "clientCertificate" | "clientKey" | "batchQueueSize" | "batchMaxSize" | "batchDelayMillis" | "batchTimeoutMillis" | "exportIntervalMillis" | "metricTimeoutMillis">
-export type Config = { traces?: SignalConfig; metrics?: SignalConfig; providerNames?: Record<string, string>; diagnostics: string[] }
+export type Config = { traces?: SignalConfig; metrics?: SignalConfig; providerNames?: Record<string, string>; executionExpiryMillis: number; diagnostics: string[] }
 type Environment = Record<string, string | undefined>
 type PrivateOptions = Pick<SignalConfig, "headers" | "certificate" | "clientCertificate" | "clientKey">
 const secrets = new WeakMap<SignalConfig, PrivateOptions>()
@@ -153,7 +153,14 @@ function resolveSignal(signal: Signal, options: Record<string, unknown>, env: En
 }
 
 export function resolveConfig(options: unknown, env: Environment = process.env): Config {
-  const config: Config = { diagnostics: [] }
+  const config: Config = { diagnostics: [], executionExpiryMillis: 24 * 60 * 60_000 }
+  try {
+    const raw = record(options).executionExpiryMillis
+    if (raw !== undefined) {
+      if (typeof raw !== "number" || !Number.isSafeInteger(raw) || raw <= 0) throw Error("expiry")
+      config.executionExpiryMillis = raw
+    }
+  } catch { config.diagnostics.push("Execution expiry invalid; using 24-hour default") }
   try {
     const names = record(record(options).providerNames)
     config.providerNames = Object.fromEntries(Object.entries(names).map(([key, value]) => {
@@ -177,7 +184,7 @@ export type Registry = { current?: Config; users: number }
 export function createRegistry(): Registry { return { users: 0 } }
 
 export function establishConfig(registry: Registry, proposed: Config): { config: Config; diagnostic?: string; release: () => void } {
-  const fingerprint = (config: Config) => JSON.stringify([config.traces, config.metrics, config.providerNames, config.traces && exporterSecrets(config.traces), config.metrics && exporterSecrets(config.metrics)])
+  const fingerprint = (config: Config) => JSON.stringify([config.traces, config.metrics, config.providerNames, config.executionExpiryMillis, config.traces && exporterSecrets(config.traces), config.metrics && exporterSecrets(config.metrics)])
   const diagnostic = registry.current && fingerprint(registry.current) !== fingerprint(proposed)
     ? "Effective exporter configuration conflicts with an active instance; restart the OpenCode service to apply changes"
     : undefined

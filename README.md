@@ -52,6 +52,8 @@ Plugin-option header and certificate values must be `{env:NAME}` references, res
 
 Optional `providerNames` maps an OpenCode provider ID to a GenAI provider name (for example, `{"my-gateway": "openai"}`). Overrides apply to spans and metric dimensions and should remain low-cardinality; invalid maps are ignored with a diagnostic.
 
+Optional `executionExpiryMillis` sets the maximum time active execution/compaction state and unmatched terminal hints may remain in memory (default: 24 hours). Stale spans end as abandoned with a content-free, rate-limited diagnostic. Child and fork sessions have their own traces linked to the parent execution; see [trace topology](docs/architecture.md).
+
 ```mermaid
 flowchart LR
     options[Plugin options] --> resolve[Resolve per signal]
