@@ -15,9 +15,9 @@ bun run verify
 
 **Verification limit:** mocked/in-memory exporters only. No launched OpenCode, SDK service, Collector, live provider, TLS handshake, or network integration test substantiates interoperability. gRPC under Bun is experimental; see [compatibility evidence](otlp-compatibility.md).
 
-## Before an actual release
+## Release process
 
 1. Confirm the [telemetry inventory](telemetry-inventory.md), [operator reference](operator-reference.md), [privacy controls](content-capture.md), [architecture](architecture.md), and accepted ADRs describe the shipped behavior.
 2. Confirm the pinned semantic-conventions **v1.40.0** commit `7fe537301d17919af7d7eb65b32e9be35da2c497`, targeted OpenCode **2.0.16**, package version **0.1.0**, and the verified Git commit in the release notes.
-3. Update [CHANGELOG.md](../CHANGELOG.md) with the release date and any verified compatibility changes. Prepare an **immutable SemVer tag** (for example, `v0.1.0`) pointing to the verified commit; only the maintainer performs the push/publication action.
-4. Once published, update the README installation example to the newest stable immutable tag and link the newest stable release notes. `#main` remains a development channel; an unqualified Git reference follows the default branch. Do not advertise a mutable `latest` Git ref.
+3. Update [CHANGELOG.md](../CHANGELOG.md) with the release date and any verified compatibility changes. Tag the verified commit with an **immutable SemVer tag** and publish its GitHub release.
+4. Point the README installation example to the newest stable tag and link its release notes. `#main` remains a development channel; an unqualified Git reference follows the default branch. Do not advertise a mutable `latest` Git ref.

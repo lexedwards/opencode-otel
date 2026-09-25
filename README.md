@@ -11,7 +11,7 @@ Add to `~/.config/opencode/opencode.jsonc` (OpenCode v2):
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
     {
-      "package": "github:lexedwards/opencode-otel#main",
+      "package": "github:lexedwards/opencode-otel#v0.1.0",
       "options": { "endpoint": "https://collector.example:4318" }
     }
   ]
@@ -20,11 +20,11 @@ Add to `~/.config/opencode/opencode.jsonc` (OpenCode v2):
 
 | Git ref | Use |
 | --- | --- |
-| Immutable SemVer tag, e.g. `#v0.1.0` | Recommended **after** that tag is published; pin a verified release. |
-| `#main` | Track development until a stable tag exists. |
+| Immutable SemVer tag, e.g. `#v0.1.0` | Recommended for stable use; pin a verified release. |
+| `#main` | Track development changes. |
 | No ref | Follow the repository's changing default branch. |
 
-Do not use a mutable `latest` Git ref. Minimum OpenCode version: **2.0.11**; specifically targeted: **2.0.16**. Later v2 compatibility is best-effort; upstream does not promise SemVer compatibility for plugin APIs. See [release readiness](docs/release-checklist.md).
+Do not use a mutable `latest` Git ref. Minimum OpenCode version: **2.0.11**; specifically targeted: **2.0.16**. Later v2 compatibility is best-effort; upstream does not promise SemVer compatibility for plugin APIs. See the [v0.1.0 release notes](https://github.com/lexedwards/opencode-otel/releases/tag/v0.1.0) and [verification limits](docs/release-checklist.md).
 
 ## Configure
 
