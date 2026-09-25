@@ -10,9 +10,12 @@ In OpenCode v2, add the package to your global `~/.config/opencode/opencode.json
 {
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
-    { "package": "github:lexedwards/opencode-otel#main", "options": {
-      "endpoint": "https://collector.example:4318"
-    } }
+    {
+      "package": "github:lexedwards/opencode-otel#main",
+      "options": {
+        "endpoint": "https://collector.example:4318"
+      }
+    }
   ]
 }
 ```
@@ -25,10 +28,21 @@ Without any endpoint, the plugin prints one `[opencode-otel]` informational mess
 
 ```jsonc
 {
-  "plugins": [{ "package": "github:lexedwards/opencode-otel#main", "options": {
-    "traces": { "endpoint": "https://collector.example:4318/v1/traces", "protocol": "http/protobuf" },
-    "metrics": { "endpoint": "https://collector.example:4318/v1/metrics", "protocol": "http/json" }
-  } }]
+  "plugins": [
+    {
+      "package": "github:lexedwards/opencode-otel#main",
+      "options": {
+        "traces": {
+          "endpoint": "https://collector.example:4318/v1/traces",
+          "protocol": "http/protobuf"
+        },
+        "metrics": {
+          "endpoint": "https://collector.example:4318/v1/metrics",
+          "protocol": "http/protobuf"
+        }
+      }
+    }
+  ]
 }
 ```
 
@@ -36,13 +50,17 @@ Fields can be set globally or per signal: `endpoint`, `protocol` (`http/protobuf
 
 Plugin-option header and certificate values must be `{env:NAME}` references, resolved from the process environment. Certificate option references must resolve to PEM contents; standard `OTEL_*_CERTIFICATE`, `OTEL_*_CLIENT_CERTIFICATE`, and `OTEL_*_CLIENT_KEY` env values are certificate file paths handled by the exporter. Do not place tokens or key contents in the config file.
 
-```text
-plugin options ───┐
-signal OTEL_* ────┼─> resolve per signal ─> validate ─> inactive or enabled configuration
-generic OTEL_* ───┤                            │
-defaults ─────────┘                            └─> safe local diagnostic on error
-                                         │
-                                         └─> first active process configuration wins
+```mermaid
+flowchart LR
+    options[Plugin options] --> resolve[Resolve per signal]
+    signal[Signal-specific OTEL variables] --> resolve
+    generic[Generic OTEL variables] --> resolve
+    defaults[Defaults] --> resolve
+    resolve --> validate{Valid configuration?}
+    validate -- No --> diagnostic[Disable affected signal and emit safe diagnostic]
+    validate -- Yes --> activation{Endpoint configured?}
+    activation -- No --> inactive[Signal inactive]
+    activation -- Yes --> established[Retain first active process configuration]
 ```
 
 The exporter package capability matrix and Bun limitations are in [docs/otlp-compatibility.md](docs/otlp-compatibility.md). Agent telemetry observes durable execution start and completion events; tool telemetry uses before/after hooks and records `gen_ai.execute_tool.duration` and `gen_ai.invoke_agent.tool_calls`. Tool spans are direct children of their agent span. It attaches no prompt, response, file path, error message, tool arguments, or tool results. Standard `OTEL_TRACES_SAMPLER` and `OTEL_TRACES_SAMPLER_ARG` settings are honored independently of metric collection. Tests run with `bun test` and `bun run typecheck`; they do not start OpenCode or a Collector.
