@@ -4,7 +4,13 @@ Unofficial community OpenCode plugin for OpenTelemetry traces and metrics. Cover
 
 ## Install from Git
 
-Add to `~/.config/opencode/opencode.jsonc` (OpenCode v2):
+Install globally with the OpenCode v2 CLI:
+
+```sh
+opencode plugin add 'github:lexedwards/opencode-otel#v0.1.0'
+```
+
+CLI installation alone does not activate telemetry; the OpenCode server also needs an OTLP endpoint (for example, `OTEL_EXPORTER_OTLP_ENDPOINT` in its environment). Alternatively, configure the package **with options** in `~/.config/opencode/opencode.jsonc`:
 
 ```jsonc
 {
@@ -25,6 +31,8 @@ Add to `~/.config/opencode/opencode.jsonc` (OpenCode v2):
 | No ref | Follow the repository's changing default branch. |
 
 Do not use a mutable `latest` Git ref. Minimum OpenCode version: **2.0.11**; specifically targeted: **2.0.16**. Later v2 compatibility is best-effort; upstream does not promise SemVer compatibility for plugin APIs. See the [v0.1.0 release notes](https://github.com/lexedwards/opencode-otel/releases/tag/v0.1.0) and [verification limits](docs/release-checklist.md).
+
+Use the tag name `#v0.1.0` in the Git package spec. Bun 1.4.0 does not resolve `#semver:0.1.0` for this GitHub repository.
 
 ## Configure
 
