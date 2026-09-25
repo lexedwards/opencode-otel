@@ -155,10 +155,10 @@ function resolveSignal(signal: Signal, options: Record<string, unknown>, env: En
 
 export function resolveConfig(options: unknown, env: Environment = process.env): Config {
   const umbrella = env.OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT?.toLowerCase() === "true"
-  const config: Config = { diagnostics: [], executionExpiryMillis: 24 * 60 * 60_000, propagateTraceContext: false, capture: { inputMessages: umbrella, outputMessages: umbrella, systemInstructions: umbrella, toolDefinitions: umbrella, redactKeys: [], redactPatterns: [] } }
+  const config: Config = { diagnostics: [], executionExpiryMillis: 24 * 60 * 60_000, propagateTraceContext: false, capture: { inputMessages: umbrella, outputMessages: umbrella, systemInstructions: umbrella, toolDefinitions: umbrella, toolArguments: false, toolResults: false, errorMessages: false, stackTraces: false, redactKeys: [], redactPatterns: [] } }
   try {
     const capture = record(record(options).capture)
-    for (const key of ["inputMessages", "outputMessages", "systemInstructions", "toolDefinitions"] as const) {
+    for (const key of ["inputMessages", "outputMessages", "systemInstructions", "toolDefinitions", "toolArguments", "toolResults", "errorMessages", "stackTraces"] as const) {
       if (capture[key] === undefined) continue
       if (typeof capture[key] !== "boolean") throw Error("capture")
       config.capture[key] = capture[key]
@@ -170,7 +170,7 @@ export function resolveConfig(options: unknown, env: Environment = process.env):
     }
     for (const expression of config.capture.redactPatterns) new RegExp(expression, "gu")
   } catch {
-    config.capture = { inputMessages: false, outputMessages: false, systemInstructions: false, toolDefinitions: false, redactKeys: [], redactPatterns: [] }
+    config.capture = { inputMessages: false, outputMessages: false, systemInstructions: false, toolDefinitions: false, toolArguments: false, toolResults: false, errorMessages: false, stackTraces: false, redactKeys: [], redactPatterns: [] }
     config.diagnostics.push("Content capture settings invalid; capture disabled")
   }
   try {

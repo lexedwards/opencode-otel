@@ -1,4 +1,4 @@
-export type CaptureCategory = "inputMessages" | "outputMessages" | "systemInstructions" | "toolDefinitions"
+export type CaptureCategory = "inputMessages" | "outputMessages" | "systemInstructions" | "toolDefinitions" | "toolArguments" | "toolResults" | "errorMessages" | "stackTraces"
 export type CaptureOptions = Record<CaptureCategory, boolean> & { redactKeys: string[]; redactPatterns: string[] }
 export type ChatMessage = { role: "system" | "user" | "assistant" | "tool"; parts: Record<string, unknown>[] }
 export type Bounded = { json: string; omittedMessages: number; omittedBytes: number }
@@ -17,7 +17,8 @@ export class PrivacyPipeline {
   }
 
   text(value: string): string {
-    const redacted = this.patterns.reduce((current, pattern) => current.replace(pattern, "[redacted]"), value)
+    const credentialsRemoved = value.replace(/\b(authorization|password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|credential|cookie)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, "$1=[redacted]")
+    const redacted = this.patterns.reduce((current, pattern) => current.replace(pattern, "[redacted]"), credentialsRemoved)
     if (encoder.encode(redacted).length <= MAX_TEXT) return redacted
     const suffix = "[truncated]"
     let size = encoder.encode(suffix).length
@@ -105,5 +106,30 @@ export class PrivacyPipeline {
       json = JSON.stringify(remaining)
     }
     return { json, omittedMessages, omittedBytes }
+  }
+
+  boundValue(input: unknown): string {
+    try {
+      const safe = this.value(input)
+      let json = JSON.stringify(safe)
+      const dropLast = (value: unknown): boolean => {
+        if (Array.isArray(value)) {
+          if (!value.length) return false
+          if (!dropLast(value.at(-1))) value.pop()
+          return true
+        }
+        if (value && typeof value === "object") {
+          const object = value as Record<string, unknown>
+          const key = Object.keys(object).at(-1)
+          if (key === undefined) return false
+          if (!dropLast(object[key])) delete object[key]
+          return true
+        }
+        return false
+      }
+      while (encoder.encode(json).length > MAX_ATTRIBUTE && dropLast(safe)) json = JSON.stringify(safe)
+      if (encoder.encode(json).length <= MAX_ATTRIBUTE) return json
+    } catch { /* unsupported values cannot affect execution */ }
+    return JSON.stringify("[omitted: unsupported or oversized]")
   }
 }

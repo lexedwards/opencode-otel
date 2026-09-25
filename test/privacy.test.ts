@@ -19,7 +19,7 @@ test("capture categories default off, umbrella enables them, and granular opt-ou
 })
 
 test("redaction precedes UTF-8 bounding, retains valid recent messages, and excludes binary", () => {
-  const pipeline = new PrivacyPipeline({ inputMessages: true, outputMessages: true, systemInstructions: true, toolDefinitions: true, redactKeys: ["sessionSecret"], redactPatterns: ["bearer-[0-9]+"] })
+  const pipeline = new PrivacyPipeline({ inputMessages: true, outputMessages: true, systemInstructions: true, toolDefinitions: true, toolArguments: false, toolResults: false, errorMessages: false, stackTraces: false, redactKeys: ["sessionSecret"], redactPatterns: ["bearer-[0-9]+"] })
   const value = pipeline.value({ nested: { password: "hidden", sessionSecret: "hidden-again", data: "bearer-1234", safe: "🦊".repeat(3000) } }) as Record<string, any>
   expect(JSON.stringify(value)).not.toMatch(/hidden|bearer-1234/)
   expect(value.nested.data).toBe("[binary omitted]")

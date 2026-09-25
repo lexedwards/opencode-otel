@@ -19,7 +19,7 @@ export type ExecutionEvent = {
   created: number
   type: "session.execution.started" | "session.execution.succeeded" | "session.execution.failed" | "session.execution.interrupted"
   location?: { workspaceID?: string; directory?: string }
-  data: { sessionID: string; error?: { type: string; message: string; status?: number }; reason?: string }
+  data: { sessionID: string; error?: { type: string; message: string; stack?: string; status?: number }; reason?: string }
 }
 
 export type ModelEvent = {
@@ -33,7 +33,7 @@ export type ModelEvent = {
     started?: number
     model?: { id: string; providerID: string }
     attempt?: number
-    error?: { type: string; message: string; status?: number }
+    error?: { type: string; message: string; stack?: string; status?: number }
     finish?: string
     cost?: number
     tokens?: { input: number; output: number; reasoning: number; cache: { read: number; write: number } }
@@ -53,7 +53,7 @@ export type CompactionEvent = {
   created: number
   type: "session.compaction.started" | "session.compaction.ended" | "session.compaction.failed"
   location?: { directory?: string }
-  data: { sessionID: string; reason: "auto" | "manual"; model?: { id: string; providerID: string }; cost?: number; tokens?: ModelEvent["data"]["tokens"]; error?: { type: string; message: string }; recent?: string; text?: string }
+  data: { sessionID: string; reason: "auto" | "manual"; model?: { id: string; providerID: string }; cost?: number; tokens?: ModelEvent["data"]["tokens"]; error?: { type: string; message: string; stack?: string }; recent?: string; text?: string }
 }
 export type SessionRelationEvent = { id: string; created: number; type: "session.created" | "session.forked"; location?: { directory?: string }; data: { sessionID: string; parentID?: string; title?: string } }
 
@@ -155,6 +155,7 @@ export class ExecutionTelemetry {
     if (event.type === "session.execution.failed") {
       execution.span?.setStatus({ code: SpanStatusCode.ERROR })
       execution.span?.setAttribute("error.type", safeErrorType(event.data.error?.type))
+      this.captureError(execution.span, event.data.error)
       if (event.data.error?.status !== undefined) execution.span?.setAttribute("opencode.error.status", event.data.error.status)
     } else if (event.type === "session.execution.interrupted") {
       execution.span?.setStatus({ code: SpanStatusCode.ERROR })
@@ -206,6 +207,15 @@ export class ExecutionTelemetry {
       }
       if (bounded.json !== "[]") span.setAttribute(key, bounded.json)
     }
+  }
+
+  private captureError(span: Span | undefined, error: unknown): void {
+    if (!span || !this.privacy || !error || typeof error !== "object") return
+    try {
+      const source = error as { message?: unknown; stack?: unknown }
+      if (this.privacy.options.errorMessages && typeof source.message === "string") span.setAttribute("exception.message", this.privacy.text(source.message))
+      if (this.privacy.options.stackTraces && typeof source.stack === "string") span.setAttribute("exception.stacktrace", this.privacy.text(source.stack))
+    } catch { /* fail open */ }
   }
 
   onTextEnded(event: { type: "session.text.ended"; data: { sessionID: string; assistantMessageID: string; ordinal: number; text: string } }): void {
@@ -374,7 +384,7 @@ export class ExecutionTelemetry {
     this.finishModel(compaction.model, event.created, event.type === "session.compaction.failed", event.data)
   }
 
-  private finishModel(step: ModelState, ended: number, failed: boolean, data: { error?: { type: string }; tokens?: ModelEvent["data"]["tokens"]; cost?: number; finish?: string }): void {
+  private finishModel(step: ModelState, ended: number, failed: boolean, data: { error?: { type: string; message: string; stack?: string }; tokens?: ModelEvent["data"]["tokens"]; cost?: number; finish?: string }): void {
     if (step.outputParts?.size && this.privacy) {
       const reason = failed ? "error" : typeof data.finish === "string" && /^[a-z_]{1,32}$/.test(data.finish) ? data.finish : "unknown"
       const parts = [...step.outputParts].sort(([a], [b]) => a - b).map(([, content]) => ({ type: "text", content }))
@@ -387,6 +397,7 @@ export class ExecutionTelemetry {
     if (failed) {
       step.span?.setAttribute("error.type", attrs["error.type"]!)
       step.span?.setStatus({ code: SpanStatusCode.ERROR })
+      this.captureError(step.span, data.error)
     } else step.span?.setStatus({ code: SpanStatusCode.OK })
     const tokens = data.tokens
     if (tokens && [tokens.input, tokens.output, tokens.cache?.read, tokens.cache?.write].every((value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0)) {
@@ -408,13 +419,13 @@ export class ExecutionTelemetry {
     let safe: ExecutionEvent | ModelEvent | CompactionEvent
     if (event.type.startsWith("session.execution.")) {
       const source = event as ExecutionEvent
-      safe = { id: source.id, created: source.created, type: source.type, data: { sessionID: source.data.sessionID, error: source.data.error ? { type: safeErrorType(source.data.error.type), message: "", status: source.data.error.status } : undefined } }
+      safe = { id: source.id, created: source.created, type: source.type, data: { sessionID: source.data.sessionID, error: source.data.error ? { type: safeErrorType(source.data.error.type), message: this.privacy?.options.errorMessages ? this.privacy.text(source.data.error.message) : "", stack: this.privacy?.options.stackTraces && source.data.error.stack ? this.privacy.text(source.data.error.stack) : undefined, status: source.data.error.status } : undefined } }
     } else if (event.type.startsWith("session.step.")) {
       const source = event as ModelEvent
-      safe = { id: source.id, created: source.created, type: source.type, data: { sessionID: source.data.sessionID, assistantMessageID: source.data.assistantMessageID, tokens: safeTokens(source.data.tokens), cost: source.data.cost, error: source.data.error ? { type: safeErrorType(source.data.error.type), message: "" } : undefined } }
+      safe = { id: source.id, created: source.created, type: source.type, data: { sessionID: source.data.sessionID, assistantMessageID: source.data.assistantMessageID, tokens: safeTokens(source.data.tokens), cost: source.data.cost, error: source.data.error ? { type: safeErrorType(source.data.error.type), message: this.privacy?.options.errorMessages ? this.privacy.text(source.data.error.message) : "", stack: this.privacy?.options.stackTraces && source.data.error.stack ? this.privacy.text(source.data.error.stack) : undefined } : undefined } }
     } else {
       const source = event as CompactionEvent
-      safe = { id: source.id, created: source.created, type: source.type, data: { sessionID: source.data.sessionID, reason: source.data.reason, model: source.data.model && { id: source.data.model.id, providerID: source.data.model.providerID }, tokens: safeTokens(source.data.tokens), cost: source.data.cost, text: this.privacy?.options.outputMessages && typeof source.data.text === "string" ? this.privacy.text(source.data.text) : undefined, error: source.data.error ? { type: safeErrorType(source.data.error.type), message: "" } : undefined } }
+      safe = { id: source.id, created: source.created, type: source.type, data: { sessionID: source.data.sessionID, reason: source.data.reason, model: source.data.model && { id: source.data.model.id, providerID: source.data.model.providerID }, tokens: safeTokens(source.data.tokens), cost: source.data.cost, text: this.privacy?.options.outputMessages && typeof source.data.text === "string" ? this.privacy.text(source.data.text) : undefined, error: source.data.error ? { type: safeErrorType(source.data.error.type), message: this.privacy?.options.errorMessages ? this.privacy.text(source.data.error.message) : "", stack: this.privacy?.options.stackTraces && source.data.error.stack ? this.privacy.text(source.data.error.stack) : undefined } : undefined } }
     }
     const old = this.pendingTerminals.get(key)
     if (old) {
@@ -439,6 +450,7 @@ export class ExecutionTelemetry {
       startTime: started,
     }, parent) : undefined
     execution.tools.set(event.id, { started, span })
+    if (span && this.privacy?.options.toolArguments) span.setAttribute("gen_ai.tool.call.arguments", this.privacy.boundValue(event.input))
   }
 
   toolAfter(event: ToolEvent): void {
@@ -453,6 +465,8 @@ export class ExecutionTelemetry {
     this.toolDuration?.record(Math.max(0, (ended - tool.started) / 1000), { "gen_ai.operation.name": "execute_tool", "error.type": outcome === "error" ? "tool.error" : undefined })
     tool.span?.setAttribute("opencode.tool.outcome", outcome)
     if (outcome === "error") tool.span?.setAttribute("error.type", "tool.error")
+    if (outcome === "error") this.captureError(tool.span, event.error)
+    if (outcome === "completed" && tool.span && this.privacy?.options.toolResults) tool.span.setAttribute("gen_ai.tool.call.result", this.privacy.boundValue(event.result))
     tool.span?.setStatus({ code: outcome === "error" ? SpanStatusCode.ERROR : SpanStatusCode.OK })
     tool.span?.end(ended)
   }
