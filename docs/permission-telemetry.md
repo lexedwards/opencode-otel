@@ -1,5 +1,13 @@
 # Permission telemetry
 
-While an agent execution is active, `permission.asked` and matching `permission.replied` events add `opencode.permission.asked` and `opencode.permission.replied` **span events** to the agent root. These are not OpenTelemetry log records. The `opencode.permission.request.count` and `opencode.permission.reply.count` counters report demand and decisions; `opencode.permission.wait.duration` records seconds between request and reply, never below zero. Replies have `once`, `always`, or `reject` outcomes. Unmatched, expired, or duplicate replies produce no reply metric. Pending requests expire after 30 minutes, and execution completion discards all remaining request state.
+| On an active agent execution | Signal |
+| --- | --- |
+| `permission.asked` | `opencode.permission.asked` root-span event; `opencode.permission.request.count`. |
+| Matching `permission.replied` | `opencode.permission.replied` root-span event; `opencode.permission.reply.count`; `opencode.permission.wait.duration` (seconds, nonnegative). |
 
-Only `opencode.permission.action` and, for replies, `opencode.permission.reply` are exported as span-event attributes or metric dimensions. Known action values are `read`, `edit`, `shell`, `webfetch`, `task`, `skill`, and `external_directory`; every other action maps to `other` to keep cardinality bounded. Permission request IDs are used only for in-process matching. Resource paths, commands, save patterns, request messages, and arbitrary metadata are never exported. Each execution holds at most 2048 pending permissions and 4096 recent completion IDs; capacity or correlation problems yield a rate-limited, content-free diagnostic.
+These are span events, **not** OpenTelemetry logs. Replies are `once`, `always`, or `reject`. Unmatched, duplicate, and expired replies produce no reply metric. Pending requests expire after 30 minutes; execution completion discards them.
+
+- Only bounded `opencode.permission.action` and `opencode.permission.reply` values become event attributes or metric dimensions.
+- Actions: `read`, `edit`, `shell`, `webfetch`, `task`, `skill`, `external_directory`; unknown actions become `other`.
+- Request IDs remain in memory for matching. Paths, commands, save patterns, request messages, and arbitrary metadata are never exported.
+- Limits per execution: 2048 pending requests and 4096 recent completion IDs. Capacity/correlation failures emit rate-limited content-free diagnostics.

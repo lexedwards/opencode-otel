@@ -1,6 +1,13 @@
 # Experimental gRPC export under Bun
 
-Set `protocol: "grpc"` explicitly for traces, metrics, or both. An endpoint such as `https://collector.example:4317` (or `collector.example:4317`, which defaults to TLS) names the host and port without a path. `http://collector.example:4317` uses insecure transport and rejects CA or client certificate configuration. A signal-specific endpoint is used as-is. There is no HTTP fallback if gRPC setup fails. Headers use the same `headers: { "Authorization": "{env:OTEL_AUTH_HEADER}" }` or standard OTLP header environment settings as HTTP and are converted to gRPC metadata. CA, client certificate, and key options use PEM-content environment references; standard OTLP certificate environment variables contain PEM **file paths**.
+Set `protocol: "grpc"` per signal (or globally). There is no HTTP fallback.
+
+| Endpoint | Transport |
+| --- | --- |
+| `https://collector.example:4317` or `collector.example:4317` | TLS by default; host and port only. |
+| `http://collector.example:4317` | Insecure; rejects CA and client certificate settings. |
+
+Plugin `headers: { "Authorization": "{env:OTEL_AUTH_HEADER}" }` and standard OTLP headers become gRPC metadata. Plugin CA/cert/key references contain PEM **contents**; standard OTLP certificate variables point to PEM **files**.
 
 Add the gRPC receiver to a Collector configuration's `otlp` receiver (the `service.pipelines` references are the same as in the [HTTP example](http-collector.md)):
 
@@ -16,4 +23,4 @@ receivers:
           client_ca_file: /etc/otel/client-ca.crt  # omit for TLS without client authentication
 ```
 
-The official JavaScript gRPC exporter targets Node.js; Bun compatibility is **experimental**. Bun unit tests cover construction, configuration, failure isolation, and credential/metadata conversion. No live network delivery, Collector handshake, or launched-OpenCode behavior has been verified.
+The JavaScript gRPC exporter targets Node.js; Bun compatibility is **experimental**. Unit tests cover construction, configuration, failure isolation, and credential conversion, **not** live delivery, Collector handshake, or launched OpenCode.

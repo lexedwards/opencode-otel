@@ -1,10 +1,10 @@
 # opencode-otel
 
-Unofficial community OpenCode plugin for privacy-conscious OpenTelemetry traces and metrics. **Work in progress:** HTTP/protobuf, HTTP/JSON, and experimental gRPC export agent-execution, tool, model and permission telemetry, with opt-in model content capture.
+Unofficial community OpenCode plugin for OpenTelemetry traces and metrics. Covers agent, tool, model, compaction, and permission operations. Content capture and provider trace propagation are opt-in. Licensed under Apache-2.0.
 
 ## Install from Git
 
-In OpenCode v2, add the package to your global `~/.config/opencode/opencode.jsonc`:
+Add to `~/.config/opencode/opencode.jsonc` (OpenCode v2):
 
 ```jsonc
 {
@@ -12,65 +12,38 @@ In OpenCode v2, add the package to your global `~/.config/opencode/opencode.json
   "plugins": [
     {
       "package": "github:lexedwards/opencode-otel#main",
-      "options": {
-        "endpoint": "https://collector.example:4318"
-      }
+      "options": { "endpoint": "https://collector.example:4318" }
     }
   ]
 }
 ```
 
-`#main` follows development. Once a stable immutable SemVer tag exists, use e.g. `#v0.1.0` to pin it. This plugin targets OpenCode **2.0.16**, with a minimum baseline of **2.0.11**. Later v2 versions may or may not work; compatibility beyond the targeted version is best-effort.
+| Git ref | Use |
+| --- | --- |
+| Immutable SemVer tag, e.g. `#v0.1.0` | Recommended **after** that tag is published; pin a verified release. |
+| `#main` | Track development until a stable tag exists. |
+| No ref | Follow the repository's changing default branch. |
 
-## Configuration
+Do not use a mutable `latest` Git ref. Minimum OpenCode version: **2.0.11**; specifically targeted: **2.0.16**. Later v2 compatibility is best-effort; upstream does not promise SemVer compatibility for plugin APIs. See [release readiness](docs/release-checklist.md).
 
-Without any endpoint, the plugin prints one `[opencode-otel]` informational message and remains inactive. `endpoint` activates both signals; `traces.endpoint` or `metrics.endpoint` activates only that signal. A generic HTTP endpoint appends `/v1/traces` and `/v1/metrics`; a signal endpoint is a complete URL. gRPC endpoints identify a host and port without a path.
+## Configure
 
-```jsonc
-{
-  "plugins": [
-    {
-      "package": "github:lexedwards/opencode-otel#main",
-      "options": {
-        "traces": {
-          "endpoint": "https://collector.example:4318/v1/traces",
-          "protocol": "http/protobuf"
-        },
-        "metrics": {
-          "endpoint": "https://collector.example:4318/v1/metrics",
-          "protocol": "http/protobuf"
-        }
-      }
-    }
-  ]
-}
-```
+| Option | Effect |
+| --- | --- |
+| `endpoint` | Enable traces and metrics; generic HTTP URL adds `/v1/traces` and `/v1/metrics`. |
+| `traces.endpoint` / `metrics.endpoint` | Enable only the specified signal; HTTP URL must include its path. |
+| `protocol` | `http/protobuf` (default), `http/json`, or experimental `grpc` under Bun. Set globally or per signal. |
+| `capture` | Explicit model, tool, and error-detail opt-ins; metadata-only by default. |
+| `propagateTraceContext: true` | Inject W3C context into supported provider requests; off by default. |
 
-Fields can be set globally or per signal: `endpoint`, `protocol` (`http/protobuf`, `http/json`, or experimental `grpc`), `headers`, `timeoutMillis`, `compression` (`none` or `gzip`), `certificate`, `clientCertificate`, and `clientKey`. Standard `OTEL_EXPORTER_OTLP_*` and `OTEL_EXPORTER_OTLP_TRACES_*` / `OTEL_EXPORTER_OTLP_METRICS_*` environment settings are supported for these fields. Option values override signal-specific env values, which override generic env values, then defaults. A missing secret reference or invalid field disables the affected signal with a safe diagnostic. The plugin keeps the first process-wide configuration while instances are active; restart the OpenCode service to apply conflicting changes. Exporter initialization failures disable only the affected signal without protocol fallback.
+No endpoint means no exporter. Per-field precedence: signal option → generic option → signal OTLP environment → generic OTLP environment → default. Restart OpenCode to change the first active process-wide configuration. Exporter failures disable the affected signal without fallback.
 
-Plugin-option header and certificate values must be `{env:NAME}` references, resolved once from the process environment. Certificate option references must resolve to PEM contents; standard `OTEL_*_CERTIFICATE`, `OTEL_*_CLIENT_CERTIFICATE`, and `OTEL_*_CLIENT_KEY` env values are certificate file paths read at setup. Secret values are held separately from printable configuration. Do not place tokens or key contents in the config file. See [HTTP OTLP collector guidance](docs/http-collector.md) and [experimental gRPC guidance](docs/grpc-collector.md).
+For partial signals, TLS/mTLS, `{env:NAME}` secret references, headers, batching, timeouts, sampling, compression, expiry, and resource defaults, use the [operator reference](docs/operator-reference.md). For receiver snippets, use [HTTP](docs/http-collector.md) or [experimental gRPC](docs/grpc-collector.md) guidance.
 
-Optional `providerNames` maps an OpenCode provider ID to a GenAI provider name (for example, `{"my-gateway": "openai"}`). Overrides apply to spans and metric dimensions and should remain low-cardinality; invalid maps are ignored with a diagnostic.
+## Telemetry and privacy
 
-Optional `executionExpiryMillis` sets the maximum time active execution/compaction state and unmatched terminal hints may remain in memory (default: 24 hours). Stale spans end as abandoned with a content-free, rate-limited diagnostic. Child and fork sessions have their own traces linked to the parent execution; see [trace topology](docs/architecture.md).
+- [Trace topology](docs/architecture.md) · [telemetry inventory](docs/telemetry-inventory.md) · [model metrics](docs/model-telemetry.md) · [permission metrics](docs/permission-telemetry.md)
+- [Content capture and redaction](docs/content-capture.md) · [W3C propagation risks](docs/provider-propagation.md)
+- [Exporter compatibility](docs/otlp-compatibility.md) · [release checks and limits](docs/release-checklist.md)
 
-Optional `propagateTraceContext: true` injects W3C `traceparent` and, when present, `tracestate` into supported provider HTTP requests and experimental WebSocket handshakes during active primary model calls or compaction. It is off by default. An existing caller-supplied W3C header takes precedence; unsupported requests and failed injection continue unchanged. Propagation discloses trace identifiers to the provider and may invalidate signed requests if headers are included in the signature. See [propagation policy](docs/provider-propagation.md).
-
-Optional `capture` enables individual model-content, tool, and error-detail categories and redaction rules. The standard GenAI message-content environment variable enables only model content unless explicitly overridden; tool and error details require their own opt-ins. Content is off by default and subject to strict text and attribute limits. See [content capture](docs/content-capture.md).
-
-```mermaid
-flowchart LR
-    options[Plugin options] --> resolve[Resolve per signal]
-    signal[Signal-specific OTEL variables] --> resolve
-    generic[Generic OTEL variables] --> resolve
-    defaults[Defaults] --> resolve
-    resolve --> validate{Valid configuration?}
-    validate -- No --> diagnostic[Disable affected signal and emit safe diagnostic]
-    validate -- Yes --> activation{Endpoint configured?}
-    activation -- No --> inactive[Signal inactive]
-    activation -- Yes --> established[Retain first active process configuration]
-```
-
-The exporter package capability matrix and Bun limitations are in [docs/otlp-compatibility.md](docs/otlp-compatibility.md). Agent telemetry observes durable execution events; tool telemetry uses before/after hooks and records `gen_ai.execute_tool.duration` and `gen_ai.invoke_agent.tool_calls`. Tool and model spans are direct children of their agent span. [Model telemetry](docs/model-telemetry.md) describes usage, latency, retry, cost, and provider mapping. [Permission telemetry](docs/permission-telemetry.md) describes request/reply events and wait metrics. By default, it attaches no prompt, response, file path, error message, tool arguments, or tool results; content requires explicit, category-specific opt-in. Standard `OTEL_TRACES_SAMPLER` and `OTEL_TRACES_SAMPLER_ARG` settings are honored independently of metric collection. Tests run with `bun test` and `bun run typecheck`; they do not start OpenCode or a Collector.
-
-Licensed under Apache-2.0.
+Verify locally with `bun install --frozen-lockfile` and `bun run verify`. Tests use mocked or in-memory exporters; they do not launch OpenCode or a Collector.

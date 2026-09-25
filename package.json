@@ -4,10 +4,24 @@
   "type": "module",
   "license": "Apache-2.0",
   "description": "Unofficial OpenCode OpenTelemetry plugin",
-  "engines": { "opencode": ">=2.0.11" },
-  "exports": { ".": "./src/index.ts" },
-  "files": ["src", "LICENSE", "README.md"],
-  "scripts": { "test": "bun test", "typecheck": "tsc --noEmit" },
+  "engines": {
+    "opencode": ">=2.0.11"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "check": "biome check src test package.json tsconfig.json",
+    "build": "bun build ./src/index.ts --target bun --packages external --outdir ./dist",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "verify": "bun run check && bun run typecheck && bun run build && bun test && bun pm pack --dry-run"
+  },
   "dependencies": {
     "@opencode/plugin": "2.0.16",
     "@opentelemetry/api": "1.9.1",
@@ -24,5 +38,10 @@
     "@opentelemetry/exporter-trace-otlp-grpc": "0.222.0",
     "@opentelemetry/exporter-metrics-otlp-grpc": "0.222.0"
   },
-  "devDependencies": { "@types/bun": "latest", "ajv": "8.17.1", "typescript": "~5.9.3" }
+  "devDependencies": {
+    "@biomejs/biome": "2.2.4",
+    "@types/bun": "1.4.2",
+    "ajv": "8.17.1",
+    "typescript": "7.0.2"
+  }
 }

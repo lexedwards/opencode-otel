@@ -1,11 +1,29 @@
-# Model content capture
+# Content capture
 
-Content capture is **off by default**. Set `capture: { "inputMessages": true, "outputMessages": true, "systemInstructions": true, "toolDefinitions": true }` in plugin options to select each category independently. `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` enables all four categories unless an explicit category option overrides it. Invalid capture options disable capture with a content-free diagnostic.
+**Default:** metadata only. No prompts, responses, tool payloads, raw errors, stacks, or inline binary. Opted-in content stays on the relevant operation span, never in metric dimensions.
 
-Captured input and output messages, system instructions, and tool definitions are JSON strings in their respective pinned GenAI attributes on **model CLIENT spans only**. Content is never copied to the agent root or metric dimensions. Primary input is observed from the OpenCode context hook; assistant output is assembled from completed text events for the active model. Compaction captures only its completed summary as output, never its partial input transcript. Hooks for title and generate requests are excluded. Missing or unmatched updates are omitted.
+## Select categories
 
-`capture.redactKeys` accepts case-insensitive property names. `capture.redactPatterns` accepts regular-expression strings matched in text. Credential-like keys (`authorization`, `password`, `secret`, `token`, `apiKey`, `accessKey`, `privateKey`, `clientSecret`, `credential`, and cookies) are redacted by default, including nested objects. Redaction precedes measurement and truncation. Each text value is at most **4 KiB** of UTF-8, ending with `[truncated]` if shortened. Each serialized attribute is at most **32 KiB**; old complete input messages are removed first, with `opencode.gen_ai.input.messages.omitted_messages` and `.omitted_bytes` counts on the model span. Other categories trim from the end. Redaction patterns are operator-controlled and cannot guarantee discovery of every secret.
+| Plugin option under `capture` | Destination | Enabled by `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`? |
+| --- | --- | --- |
+| `inputMessages`, `outputMessages` | Model CLIENT span, pinned GenAI JSON attributes | Yes, unless explicitly overridden |
+| `systemInstructions`, `toolDefinitions` | Model CLIENT span, pinned GenAI JSON attributes | Yes, unless explicitly overridden |
+| `toolArguments`, `toolResults` | Matching `execute_tool` span, JSON attributes | No |
+| `errorMessages`, `stackTraces` | Failing agent/model/tool span (`exception.message`, `exception.stacktrace`) | No |
 
-Tool and error details require **separate** opt-ins: `capture.toolArguments`, `capture.toolResults`, `capture.errorMessages`, and `capture.stackTraces`. The GenAI message-content environment umbrella does **not** enable these categories. Tool arguments and results are valid JSON strings on the corresponding `execute_tool` span (`gen_ai.tool.call.arguments` and `gen_ai.tool.call.result`), never the root or a model span. Unsupported or cyclic values become safe placeholders; oversized objects drop trailing properties while retaining valid JSON. Error messages (`exception.message`) and stack traces (`exception.stacktrace`) are independent and appear only on the failing operation span (agent execution, model, or tool). Error type/status remain available without either opt-in. Ordinary text containing credential-like assignments is redacted before truncation, along with configured patterns.
+Example: `"capture": { "inputMessages": true, "toolArguments": true, "stackTraces": false }`. Each switch is independent. Invalid capture settings disable capture with a content-free diagnostic. Error type/status remain available without error-content opt-in.
 
-Inline image, audio, video, file bytes, and base64 payloads are omitted. External URI and file references may carry modality and MIME metadata and are subject to the same redaction and size limits; configure patterns when URIs or IDs themselves contain sensitive information. Tests check the vendored v1.40.0 input/output/system JSON schemas and verify no inline binary is exported.
+## Bound and redact
+
+1. Built-in credential-like property names (`authorization`, `password`, `secret`, `token`, `apiKey`, `accessKey`, `privateKey`, `clientSecret`, `credential`, cookies) are redacted, including nested objects and assignment-like text.
+2. Add case-insensitive property names in `capture.redactKeys` and text regexes in `capture.redactPatterns`. These rules cannot find every secret; configure them for your data.
+3. Redaction runs **before** measuring. Each text part is at most **4 KiB UTF-8**, with `[truncated]` when shortened; each serialized attribute is at most **32 KiB**.
+4. Oversized input drops oldest complete messages first and records `opencode.gen_ai.input.messages.omitted_messages` and `.omitted_bytes`. Other lists trim from the end; oversized tool JSON drops trailing entries while remaining valid JSON. Unsupported or cyclic values use placeholders.
+
+Inline image, audio, video, file bytes, base64 and data URLs are omitted. External URI/file references may include modality and MIME type; redact IDs/URIs if they contain secrets. Pinned v1.40.0 input, output, and instruction JSON schemas are checked in unit tests.
+
+## Source limitations
+
+- Primary input: OpenCode context hook. Assistant output: completed text events for the active model. Missing or unmatched events are omitted.
+- Compaction: only the **completed summary** may be captured as output; no partial input transcript or text deltas.
+- Title and transient generate requests have no model spans or captured content.

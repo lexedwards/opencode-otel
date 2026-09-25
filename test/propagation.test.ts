@@ -2,8 +2,8 @@ import { expect, test } from "bun:test"
 import { createTraceState, SpanKind, trace } from "@opentelemetry/api"
 import { InMemorySpanExporter } from "@opentelemetry/sdk-trace-base"
 import { resolveConfig } from "../src/config"
-import { createTelemetry } from "../src/telemetry"
 import { injectTraceHeaders } from "../src/propagation"
+import { createTelemetry } from "../src/telemetry"
 
 test("propagation defaults off and rejects invalid configuration without leaking values", () => {
   expect(resolveConfig({ endpoint: "https://collector.test" }, {}).propagateTraceContext).toBe(false)
@@ -19,7 +19,12 @@ test("only active primary and compaction model contexts inject W3C HTTP and WS h
   const execution = pipeline.execution
   expect(execution.contextForRequest("session-1", "primary", { id: "model", providerID: "openai" })).toBeUndefined()
   execution.onEvent({ type: "session.execution.started", id: "start", created: 1000, data: { sessionID: "session-1" } }, "project")
-  execution.onModelEvent({ type: "session.step.started", id: "step", created: 1100, data: { sessionID: "session-1", assistantMessageID: "msg", model: { id: "model", providerID: "openai" } } })
+  execution.onModelEvent({
+    type: "session.step.started",
+    id: "step",
+    created: 1100,
+    data: { sessionID: "session-1", assistantMessageID: "msg", model: { id: "model", providerID: "openai" } }
+  })
   const selected = execution.contextForRequest("session-1", "primary", { id: "model", providerID: "openai" })!
   expect(selected).toBeDefined()
   expect(execution.contextForRequest("session-1", "primary", { id: "other", providerID: "openai" })).toBeUndefined()
@@ -36,7 +41,12 @@ test("only active primary and compaction model contexts inject W3C HTTP and WS h
   expect(compact.spanId).not.toBe(selected.spanId)
   execution.onModelEvent({ type: "session.step.ended", id: "step-end", created: 1300, data: { sessionID: "session-1", assistantMessageID: "msg" } })
   expect(execution.contextForRequest("session-1", "primary", { id: "model", providerID: "openai" })).toBeUndefined()
-  execution.onCompactionEvent({ type: "session.compaction.ended", id: "compaction-end", created: 1400, data: { sessionID: "session-1", reason: "auto", model: { id: "model", providerID: "openai" } } })
+  execution.onCompactionEvent({
+    type: "session.compaction.ended",
+    id: "compaction-end",
+    created: 1400,
+    data: { sessionID: "session-1", reason: "auto", model: { id: "model", providerID: "openai" } }
+  })
   await pipeline.traces?.forceFlush()
   expect(spans.getFinishedSpans().filter((s) => s.kind === SpanKind.CLIENT)).toHaveLength(2)
   await pipeline.shutdown()
@@ -54,10 +64,22 @@ test("existing headers win, tracestate is forwarded, and immutable headers fail 
   const empty = new Headers()
   expect(injectTraceHeaders(empty, context)).toBe(true)
   expect(empty.get("tracestate")).toBe("vendor=value")
-  const unavailable = new Proxy({}, { ownKeys() { throw Error("private error") } }) as Record<string, string>
+  const unavailable = new Proxy(
+    {},
+    {
+      ownKeys() {
+        throw Error("private error")
+      }
+    }
+  ) as Record<string, string>
   expect(() => injectTraceHeaders(unavailable, context)).toThrow()
   const blocked: Record<string, string> = {}
-  Object.defineProperty(blocked, "traceparent", { set() { throw Error("private setter") }, configurable: true })
+  Object.defineProperty(blocked, "traceparent", {
+    set() {
+      throw Error("private setter")
+    },
+    configurable: true
+  })
   expect(() => injectTraceHeaders(blocked, context)).toThrow()
   expect(blocked.tracestate).toBeUndefined()
   expect(trace.getTracerProvider()).toBeDefined()

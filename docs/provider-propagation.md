@@ -1,7 +1,15 @@
 # Provider trace-context propagation
 
-Set `propagateTraceContext: true` in plugin options to add W3C `traceparent` and, when present, `tracestate` to supported outbound model-provider HTTP requests or experimental WebSocket handshakes. This is disabled by default; a boolean is required. Propagation requires an active primary model or compaction span; primary requests match session, kind, and model, while compaction requests match session and kind. Title and generate requests are excluded. If several matching primary calls overlap, the most recently started model span is selected. Without a matching active span, the request remains unchanged. Sampling decisions follow the span context's trace flags.
+Set `propagateTraceContext: true` to add W3C `traceparent` and, when available, `tracestate` to supported provider HTTP requests and experimental WebSocket handshakes. **Off by default.**
 
-The plugin preserves caller-supplied `traceparent` **or** `tracestate` rather than overwriting either header. Header comparisons are case-insensitive. Unsupported request shapes, missing context, and hook or injection failures do not interrupt provider calls. Failures emit a rate-limited, content-free diagnostic; request bodies, authorization values, and content are not logged. Adding headers can invalidate signed provider requests whose signatures include the header set. It also exposes trace IDs and sampling flags (and any existing trace state) to the upstream provider. Enable only when that disclosure and request mutation are appropriate for the provider/gateway.
+| Request | Context selection |
+| --- | --- |
+| Primary model | Match active session, request kind, and model; use most recently started matching call. |
+| Compaction | Match active session and kind. |
+| Title or generate | No propagation. |
 
-Unit tests use mocked OpenCode hooks and requests and do not perform network calls or claim compatibility with every provider implementation.
+- Caller-supplied `traceparent` **or** `tracestate` wins; header names are case-insensitive.
+- Missing context, unsupported shapes, and injection failures leave provider calls running. Failure diagnostics are rate-limited and content-free.
+- Injected headers disclose trace IDs, sampling flags, and any trace state to the provider. They can invalidate signed requests whose signatures include headers.
+
+Verification uses mocked hooks and requests only; no network or provider compatibility test.

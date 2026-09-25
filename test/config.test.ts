@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { resolveConfig, establishConfig, createRegistry } from "../src/config"
+import { createRegistry, establishConfig, resolveConfig } from "../src/config"
 
 test("no endpoint means neither signal is enabled", () => {
   const config = resolveConfig({}, {})
@@ -28,8 +28,8 @@ test("generic endpoint appends HTTP signal path and options override signal and 
       OTEL_EXPORTER_OTLP_ENDPOINT: "https://generic.test/otlp",
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "https://specific.test/traces",
       OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf",
-      OTEL_EXPORTER_OTLP_TRACES_PROTOCOL: "grpc",
-    },
+      OTEL_EXPORTER_OTLP_TRACES_PROTOCOL: "grpc"
+    }
   )
   expect(config.traces).toMatchObject({ endpoint: "https://option.test/v1/traces", protocol: "http/json" })
   expect(config.metrics).toMatchObject({ endpoint: "https://generic.test/otlp/v1/metrics", protocol: "http/protobuf" })
@@ -42,10 +42,13 @@ test("generic plugin option overrides signal-specific environment endpoint", () 
 })
 
 test("invalid protocol or incomplete mTLS affects only configured signal", () => {
-  const config = resolveConfig({ traces: { clientKey: "{env:KEY}" } }, {
-    KEY: "hidden",
-    OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector.test",
-  })
+  const config = resolveConfig(
+    { traces: { clientKey: "{env:KEY}" } },
+    {
+      KEY: "hidden",
+      OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector.test"
+    }
+  )
   expect(config.traces).toBeUndefined()
   expect(config.metrics).toBeDefined()
   expect(config.diagnostics.join(" ")).not.toContain("hidden")
@@ -54,7 +57,7 @@ test("invalid protocol or incomplete mTLS affects only configured signal", () =>
 test("invalid trace settings disable only traces and diagnostics contain no secret", () => {
   const config = resolveConfig(
     { traces: { headers: { Authorization: "{env:MISSING_SECRET}" } } },
-    { OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector.test", OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "https://user:secret@collector.test" },
+    { OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector.test", OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "https://user:secret@collector.test" }
   )
   expect(config.traces).toBeUndefined()
   expect(config.metrics).toBeDefined()
@@ -96,7 +99,11 @@ test("process configuration is fixed across instances until final cleanup", () =
 })
 
 test("HTTP secret references are resolved once without appearing in printable config", () => {
-  const env = { TOKEN: "Bearer private-token", CA: "-----BEGIN CERTIFICATE-----\nprivate-ca\n-----END CERTIFICATE-----", OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector.test" }
+  const env = {
+    TOKEN: "Bearer private-token",
+    CA: "-----BEGIN CERTIFICATE-----\nprivate-ca\n-----END CERTIFICATE-----",
+    OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector.test"
+  }
   const config = resolveConfig({ traces: { headers: { Authorization: "{env:TOKEN}" }, certificate: "{env:CA}" } }, env)
   expect(config.traces).toBeDefined()
   expect(JSON.stringify(config)).not.toMatch(/private-token|private-ca|\{env:/)
@@ -106,16 +113,19 @@ test("HTTP secret references are resolved once without appearing in printable co
 })
 
 test("standard HTTP controls resolve per signal and reject invalid batching", () => {
-  const config = resolveConfig({ endpoint: "https://collector.test", traces: { protocol: "http/json", batchMaxSize: 100 }, metrics: { exportIntervalMillis: 15000 } }, {
-    OTEL_EXPORTER_OTLP_HEADERS: "Authorization=Bearer%20secret,x-custom=one",
-    OTEL_EXPORTER_OTLP_TRACES_HEADERS: "x-custom=two",
-    OTEL_BSP_MAX_QUEUE_SIZE: "200",
-    OTEL_BSP_MAX_EXPORT_BATCH_SIZE: "150",
-    OTEL_BSP_SCHEDULE_DELAY: "7000",
-    OTEL_BSP_EXPORT_TIMEOUT: "25000",
-    OTEL_METRIC_EXPORT_INTERVAL: "12000",
-    OTEL_METRIC_EXPORT_TIMEOUT: "26000",
-  })
+  const config = resolveConfig(
+    { endpoint: "https://collector.test", traces: { protocol: "http/json", batchMaxSize: 100 }, metrics: { exportIntervalMillis: 15000 } },
+    {
+      OTEL_EXPORTER_OTLP_HEADERS: "Authorization=Bearer%20secret,x-custom=one",
+      OTEL_EXPORTER_OTLP_TRACES_HEADERS: "x-custom=two",
+      OTEL_BSP_MAX_QUEUE_SIZE: "200",
+      OTEL_BSP_MAX_EXPORT_BATCH_SIZE: "150",
+      OTEL_BSP_SCHEDULE_DELAY: "7000",
+      OTEL_BSP_EXPORT_TIMEOUT: "25000",
+      OTEL_METRIC_EXPORT_INTERVAL: "12000",
+      OTEL_METRIC_EXPORT_TIMEOUT: "26000"
+    }
+  )
   expect(config.traces).toMatchObject({ protocol: "http/json", batchMaxSize: 100, batchQueueSize: 200, batchDelayMillis: 7000, batchTimeoutMillis: 25000 })
   expect(config.metrics).toMatchObject({ exportIntervalMillis: 15000, metricTimeoutMillis: 26000 })
   expect(JSON.stringify(config)).not.toContain("Bearer secret")

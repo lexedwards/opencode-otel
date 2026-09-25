@@ -1,9 +1,26 @@
 # Model telemetry
 
-Primary `session.step` calls become `chat <model-id>` CLIENT spans directly beneath `invoke_agent`. Their `gen_ai.operation.name` is `chat`; provider IDs are mapped where known (`google-vertex` to `gcp.vertex_ai`, `google` to `gcp.gemini`, `amazon-bedrock` to `aws.bedrock`, `azure` to `azure.ai.openai`, `mistral` to `mistral_ai`) and unknown IDs remain unchanged unless overridden with `providerNames`. The model ID is a span attribute, never a metric dimension. Model content is absent by default and subject to [explicit category opt-ins](content-capture.md). Error messages, stacks, and raw provider state are not captured. The vocabulary is pinned in [ADR 005](adrs/005-model-semantic-conventions.md); no GenAI schema URL is attached.
+## Spans
 
-`gen_ai.client.operation.duration` records seconds from step dispatch through completion, including retries. `gen_ai.client.operation.time_to_first_chunk` records seconds to the first durable streamed event, when observed. `gen_ai.client.token.usage` records input tokens as input + cache read + cache write, and output tokens separately. `gen_ai.invoke_agent.inference_calls` records completed calls per agent execution, including failures; `opencode.gen_ai.cost` adds reported USD cost and `opencode.gen_ai.retry.count` adds scheduled retries. The `time_to_first_chunk`, `inference_calls`, cost and retry instruments are provisional extensions to the pinned conventions. `gen_ai.client.operation.time_per_output_chunk` is not recorded: text deltas cannot reliably identify provider output chunks. Abandoned steps end when the agent execution ends, without inventing usage, cost or a completed-call count.
+| Operation | Span | Parent | Captured content |
+| --- | --- | --- | --- |
+| Primary model step | `chat <model-id>` CLIENT | `invoke_agent` | Absent unless [opted in](content-capture.md). |
+| Active compaction | `chat` CLIENT | `invoke_agent` | Only completed summary, if output capture enabled. |
+| Manual compaction | `chat` CLIENT | Separate trace | Same summary rule. |
+| Title / transient `session.generate` | None | — | None. |
 
-Metrics use operation, mapped provider, token type (where applicable) and bounded error type only. Provider names from custom integrations can be high-cardinality if operators create many distinct provider IDs. All telemetry is in-memory-unit-tested; no launched OpenCode or Collector interoperability is asserted.
+All model operations use `gen_ai.operation.name=chat`. The model ID is a span attribute, never a metric dimension. Raw provider state is not captured. The vocabulary is pinned in [ADR 005](adrs/005-model-semantic-conventions.md); no GenAI schema URL is attached.
 
-Compaction uses the same `chat` inference convention and metrics. When an execution is active, the compaction span is its direct child; manual compaction without an active execution forms a standalone trace. A compaction span carries `opencode.model.kind=compaction`; its incomplete input transcript and text deltas are never attached. Its completed summary is available only when output-message capture is explicitly enabled. Title generation and transient `session.generate` requests have no model spans or metrics. See [trace topology](architecture.md) for linked child/fork executions and expiry.
+## Metrics
+
+- `gen_ai.client.operation.duration`: step dispatch through completion, including retries (seconds).
+- `gen_ai.client.operation.time_to_first_chunk`: first durable streamed event, when available (seconds).
+- `gen_ai.client.token.usage`: provider-reported input + cache read + cache write; output reported separately.
+- `gen_ai.invoke_agent.inference_calls`: completed calls per execution, including failures.
+- `opencode.gen_ai.cost`: reported USD cost; `opencode.gen_ai.retry.count`: scheduled retries.
+
+Time-to-first-chunk, inference calls, cost, and retry metrics are provisional extensions to the pinned vocabulary. `gen_ai.client.operation.time_per_output_chunk` is **not** emitted: OpenCode text deltas do not reliably identify provider chunks. Abandoned steps end with their agent execution without invented usage or cost.
+
+Metric dimensions: operation, mapped provider, token type where applicable, and bounded error type. Known provider mappings include `google-vertex` → `gcp.vertex_ai`, `google` → `gcp.gemini`, `amazon-bedrock` → `aws.bedrock`, `azure` → `azure.ai.openai`, `mistral` → `mistral_ai`. Unknown IDs remain unchanged unless set in `providerNames`; custom IDs can add cardinality.
+
+Verified with in-memory unit tests; no launched OpenCode or Collector interoperability claim.

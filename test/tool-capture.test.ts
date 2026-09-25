@@ -21,20 +21,33 @@ test("default tool and failed model spans retain status without payload or excep
   c.onEvent({ type: "session.execution.started", id: "root", created: 1000, data: { sessionID: "session" } }, "project")
   c.toolBefore({ sessionID: "session", id: "tool", tool: "shell", input: source })
   c.toolAfter({ sessionID: "session", id: "tool", tool: "shell", status: "error", error })
-  c.onModelEvent({ type: "session.step.started", id: "step", created: 1100, data: { sessionID: "session", assistantMessageID: "msg", model: { id: "model", providerID: "openai" } } })
+  c.onModelEvent({
+    type: "session.step.started",
+    id: "step",
+    created: 1100,
+    data: { sessionID: "session", assistantMessageID: "msg", model: { id: "model", providerID: "openai" } }
+  })
   c.onModelEvent({ type: "session.step.failed", id: "step-end", created: 1200, data: { sessionID: "session", assistantMessageID: "msg", error } })
   c.onEvent({ type: "session.execution.failed", id: "end", created: 1300, data: { sessionID: "session", error } }, "project")
   await telemetry.traces?.forceFlush()
   const all = spans.getFinishedSpans()
   expect(all.find((span) => span.name === "chat model")?.attributes["error.type"]).toBe("unknown")
   expect(all.find((span) => span.name === "execute_tool")?.attributes["error.type"]).toBe("tool.error")
-  expect(JSON.stringify(all.map((span) => span.attributes))).not.toMatch(/private|gen_ai.tool.call.arguments|gen_ai.tool.call.result|exception.message|exception.stacktrace/)
+  expect(JSON.stringify(all.map((span) => span.attributes))).not.toMatch(
+    /private|gen_ai.tool.call.arguments|gen_ai.tool.call.result|exception.message|exception.stacktrace/
+  )
   await telemetry.shutdown()
 })
 
 test("tool payload and exception opt-ins stay on the relevant spans and redact before bounding", async () => {
   const spans = new InMemorySpanExporter()
-  const config = resolveConfig({ endpoint: "https://collector.test", capture: { toolArguments: true, toolResults: true, errorMessages: true, stackTraces: false, redactPatterns: ["bearer-[0-9]+"] } }, {})
+  const config = resolveConfig(
+    {
+      endpoint: "https://collector.test",
+      capture: { toolArguments: true, toolResults: true, errorMessages: true, stackTraces: false, redactPatterns: ["bearer-[0-9]+"] }
+    },
+    {}
+  )
   const telemetry = createTelemetry(config, "2.0.16", { traces: spans })
   const c = telemetry.execution
   c.onEvent({ type: "session.execution.started", id: "root", created: 1000, data: { sessionID: "session" } }, "project")
@@ -42,7 +55,12 @@ test("tool payload and exception opt-ins stay on the relevant spans and redact b
   c.toolAfter({ sessionID: "session", id: "tool-ok", tool: "read", status: "completed", result: { value: source } })
   c.toolBefore({ sessionID: "session", id: "tool-bad", tool: "shell", input: source })
   c.toolAfter({ sessionID: "session", id: "tool-bad", tool: "shell", status: "error", error })
-  c.onModelEvent({ type: "session.step.started", id: "step", created: 1100, data: { sessionID: "session", assistantMessageID: "msg", model: { id: "model", providerID: "openai" } } })
+  c.onModelEvent({
+    type: "session.step.started",
+    id: "step",
+    created: 1100,
+    data: { sessionID: "session", assistantMessageID: "msg", model: { id: "model", providerID: "openai" } }
+  })
   c.onModelEvent({ type: "session.step.failed", id: "step-end", created: 1200, data: { sessionID: "session", assistantMessageID: "msg", error } })
   c.onEvent({ type: "session.execution.failed", id: "end", created: 1300, data: { sessionID: "session", error } }, "project")
   await telemetry.traces?.forceFlush()
@@ -66,7 +84,10 @@ test("tool payload and exception opt-ins stay on the relevant spans and redact b
 
 test("stack-only capture and oversized or cyclic tool values remain bounded and fail open", async () => {
   const spans = new InMemorySpanExporter()
-  const config = resolveConfig({ endpoint: "https://collector.test", capture: { toolArguments: true, stackTraces: true, redactPatterns: ["bearer-[0-9]+"] } }, {})
+  const config = resolveConfig(
+    { endpoint: "https://collector.test", capture: { toolArguments: true, stackTraces: true, redactPatterns: ["bearer-[0-9]+"] } },
+    {}
+  )
   const telemetry = createTelemetry(config, "2.0.16", { traces: spans })
   const c = telemetry.execution
   c.onEvent({ type: "session.execution.started", id: "root", created: 1000, data: { sessionID: "session" } }, "project")
@@ -85,7 +106,14 @@ test("stack-only capture and oversized or cyclic tool values remain bounded and 
   expect(tool.attributes["exception.stacktrace"]).toBe("private stack [redacted]")
   const privacy = new PrivacyPipeline(config.capture)
   expect(privacy.text("Authorization: BearerSecret password=hidden")).toBe("Authorization=[redacted] password=[redacted]")
-  const unsupported = new Proxy({}, { ownKeys() { throw Error("private proxy") } })
+  const unsupported = new Proxy(
+    {},
+    {
+      ownKeys() {
+        throw Error("private proxy")
+      }
+    }
+  )
   expect(JSON.parse(privacy.boundValue(unsupported))).toBe("[omitted: unsupported or oversized]")
   expect(JSON.parse(privacy.boundValue(42))).toBe(42)
   expect(JSON.parse(privacy.boundValue(null))).toBeNull()

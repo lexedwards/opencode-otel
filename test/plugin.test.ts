@@ -1,7 +1,7 @@
-import { expect, test, spyOn } from "bun:test"
+import { expect, spyOn, test } from "bun:test"
 import type { Plugin } from "@opencode/plugin"
-import plugin from "../src/index"
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-proto"
+import plugin from "../src/index"
 
 test("plugin entrypoint reports inactivity once and cleans up", async () => {
   const info = spyOn(console, "info").mockImplementation(() => {})
@@ -22,10 +22,20 @@ test("matching locations share one pipeline and only the final unload closes it"
     app: { version: "2.0.16" },
     options: { traces: { endpoint: "https://collector.test/v1/traces" } },
     location: { directory: "/workspace", project: { id: "opaque-project" } },
-    tool: { async hook() { return { async dispose() {} } } },
-    event: { subscribe({ signal }: { signal: AbortSignal }) {
-      return { async *[Symbol.asyncIterator]() { await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true })) } }
-    } },
+    tool: {
+      async hook() {
+        return { async dispose() {} }
+      }
+    },
+    event: {
+      subscribe({ signal }: { signal: AbortSignal }) {
+        return {
+          async *[Symbol.asyncIterator]() {
+            await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }))
+          }
+        }
+      }
+    }
   } as unknown as Plugin.Context
   try {
     const first = await plugin.setup(ctx)
@@ -43,23 +53,43 @@ test("provider request hooks are opt-in, propagate an active model context, and 
   const registered = new Map<string, (event: any) => void>()
   const diagnostics = spyOn(console, "info").mockImplementation(() => {})
   const exportSpans = spyOn(OTLPTraceExporter.prototype, "export").mockImplementation((_spans, callback) => callback({ code: 0 }))
-  const context = (propagateTraceContext: boolean) => ({
-    app: { version: "2.0.16" },
-    options: { traces: { endpoint: "https://collector.test/v1/traces" }, propagateTraceContext },
-    location: { directory: "/workspace", project: { id: "opaque-project" } },
-    tool: { async hook() { return { async dispose() {} } } },
-    session: { async hook(name: string, callback: (event: any) => void) {
-      registered.set(name, callback)
-      return { async dispose() { registered.delete(name) } }
-    } },
-    event: { subscribe({ signal }: { signal: AbortSignal }) {
-      return { async *[Symbol.asyncIterator]() {
-        yield { type: "session.execution.started", id: "root", created: 1000, data: { sessionID: "session-1" } }
-        yield { type: "session.step.started", id: "model-start", created: 1100, data: { sessionID: "session-1", assistantMessageID: "msg", model: { id: "model", providerID: "openai" } } }
-        await new Promise<void>((resolve) => signal.aborted ? resolve() : signal.addEventListener("abort", () => resolve(), { once: true }))
-      } }
-    } },
-  }) as unknown as Plugin.Context
+  const context = (propagateTraceContext: boolean) =>
+    ({
+      app: { version: "2.0.16" },
+      options: { traces: { endpoint: "https://collector.test/v1/traces" }, propagateTraceContext },
+      location: { directory: "/workspace", project: { id: "opaque-project" } },
+      tool: {
+        async hook() {
+          return { async dispose() {} }
+        }
+      },
+      session: {
+        async hook(name: string, callback: (event: any) => void) {
+          registered.set(name, callback)
+          return {
+            async dispose() {
+              registered.delete(name)
+            }
+          }
+        }
+      },
+      event: {
+        subscribe({ signal }: { signal: AbortSignal }) {
+          return {
+            async *[Symbol.asyncIterator]() {
+              yield { type: "session.execution.started", id: "root", created: 1000, data: { sessionID: "session-1" } }
+              yield {
+                type: "session.step.started",
+                id: "model-start",
+                created: 1100,
+                data: { sessionID: "session-1", assistantMessageID: "msg", model: { id: "model", providerID: "openai" } }
+              }
+              await new Promise<void>((resolve) => (signal.aborted ? resolve() : signal.addEventListener("abort", () => resolve(), { once: true })))
+            }
+          }
+        }
+      }
+    }) as unknown as Plugin.Context
   try {
     const defaultCleanup = await plugin.setup(context(false))
     expect(registered.size).toBe(0)
@@ -81,11 +111,30 @@ test("provider request hooks are opt-in, propagate an active model context, and 
       const headers: Record<string, string> = {}
       ws({ sessionID: "session-1", kind: "primary", model: { id: "model", providerID: "openai" }, headers })
       expect(headers.traceparent).toBe(request.headers.get("traceparent")!)
-      http({ sessionID: "session-1", kind: "primary", model: { id: "model", providerID: "openai" }, request: { headers: new Proxy({}, { ownKeys() { throw Error("private request") } }) } })
+      http({
+        sessionID: "session-1",
+        kind: "primary",
+        model: { id: "model", providerID: "openai" },
+        request: {
+          headers: new Proxy(
+            {},
+            {
+              ownKeys() {
+                throw Error("private request")
+              }
+            }
+          )
+        }
+      })
       expect(diagnostics.mock.calls.map((call) => call[0])).toEqual(["[opencode-otel] Trace propagation unavailable; request unchanged"])
-    } finally { if (cleanup) await cleanup() }
+    } finally {
+      if (cleanup) await cleanup()
+    }
     expect(registered.size).toBe(0)
-  } finally { diagnostics.mockRestore(); exportSpans.mockRestore() }
+  } finally {
+    diagnostics.mockRestore()
+    exportSpans.mockRestore()
+  }
 })
 
 test("opted-in context and completed text hooks attach content through the plugin", async () => {
@@ -96,34 +145,76 @@ test("opted-in context and completed text hooks attach content through the plugi
     done({ code: 0 })
   })
   let advance!: () => void
-  const gate = new Promise<void>((resolve) => { advance = resolve })
+  const gate = new Promise<void>((resolve) => {
+    advance = resolve
+  })
   const ctx = {
     app: { version: "2.0.16" },
     options: { traces: { endpoint: "https://collector.test/v1/traces" }, capture: { inputMessages: true, outputMessages: true } },
     location: { directory: "/workspace", project: { id: "project" } },
-    tool: { async hook() { return { async dispose() {} } } },
-    session: { async hook(name: string, callback: (event: any) => void) { callbacks.set(name, callback); return { async dispose() { callbacks.delete(name) } } } },
-    event: { subscribe() { return { async *[Symbol.asyncIterator]() {
-      yield { type: "session.execution.started", id: "root", created: 1000, data: { sessionID: "session" } }
-      await gate
-      yield { type: "session.step.started", id: "step", created: 1100, data: { sessionID: "session", assistantMessageID: "msg", model: { id: "model", providerID: "openai" } } }
-      yield { type: "session.text.ended", id: "text", created: 1200, data: { sessionID: "session", assistantMessageID: "msg", ordinal: 0, text: "private response" } }
-      yield { type: "session.step.ended", id: "end", created: 1300, data: { sessionID: "session", assistantMessageID: "msg" } }
-      yield { type: "session.execution.succeeded", id: "root-end", created: 1400, data: { sessionID: "session" } }
-    } } } },
+    tool: {
+      async hook() {
+        return { async dispose() {} }
+      }
+    },
+    session: {
+      async hook(name: string, callback: (event: any) => void) {
+        callbacks.set(name, callback)
+        return {
+          async dispose() {
+            callbacks.delete(name)
+          }
+        }
+      }
+    },
+    event: {
+      subscribe() {
+        return {
+          async *[Symbol.asyncIterator]() {
+            yield { type: "session.execution.started", id: "root", created: 1000, data: { sessionID: "session" } }
+            await gate
+            yield {
+              type: "session.step.started",
+              id: "step",
+              created: 1100,
+              data: { sessionID: "session", assistantMessageID: "msg", model: { id: "model", providerID: "openai" } }
+            }
+            yield {
+              type: "session.text.ended",
+              id: "text",
+              created: 1200,
+              data: { sessionID: "session", assistantMessageID: "msg", ordinal: 0, text: "private response" }
+            }
+            yield { type: "session.step.ended", id: "end", created: 1300, data: { sessionID: "session", assistantMessageID: "msg" } }
+            yield { type: "session.execution.succeeded", id: "root-end", created: 1400, data: { sessionID: "session" } }
+          }
+        }
+      }
+    }
   } as unknown as Plugin.Context
   try {
     const cleanup = await plugin.setup(ctx)
     try {
       expect([...callbacks.keys()].sort()).toEqual(["compaction", "context"])
       for (let i = 0; i < 8; i++) await Promise.resolve()
-      callbacks.get("context")!({ sessionID: "session", model: { id: "model", providerID: "openai" }, system: [], tools: {}, messages: [{ role: "user", content: [{ type: "text", text: "private request" }] }] })
+      callbacks.get("context")!({
+        sessionID: "session",
+        model: { id: "model", providerID: "openai" },
+        system: [],
+        tools: {},
+        messages: [{ role: "user", content: [{ type: "text", text: "private request" }] }]
+      })
       advance()
       for (let i = 0; i < 16; i++) await Promise.resolve()
-    } finally { if (cleanup) await cleanup() }
+    } finally {
+      if (cleanup) await cleanup()
+    }
     expect(exported.find((span) => span.name === "chat model")?.attributes["gen_ai.input.messages"]).toContain("private request")
     expect(exported.find((span) => span.name === "chat model")?.attributes["gen_ai.output.messages"]).toContain("private response")
     expect(JSON.stringify(exported.find((span) => span.name === "invoke_agent")?.attributes)).not.toContain("private")
     expect(callbacks.size).toBe(0)
-  } finally { advance(); exportSpans.mockRestore() }
+  } finally {
+    advance()
+    exportSpans.mockRestore()
+  }
 })
