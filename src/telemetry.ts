@@ -165,6 +165,19 @@ export class ExecutionTelemetry {
     this.parents.set(event.data.sessionID, { parentID, created: event.created, context: this.active.get(parentID)?.span?.spanContext() })
   }
 
+  contextForRequest(sessionID: string, kind: "primary" | "compaction" | "title" | "generate", model: { id: string; providerID: string }): SpanContext | undefined {
+    if (kind === "compaction") return this.compactions.get(sessionID)?.model.span?.spanContext()
+    if (kind !== "primary") return undefined
+    const execution = this.active.get(sessionID)
+    if (!execution) return undefined
+    let selected: ModelState | undefined
+    for (const step of execution.models.values()) {
+      if (step.model !== model.id || step.provider !== (Object.hasOwn(this.providerNames, model.providerID) ? this.providerNames[model.providerID] : providerName(model.providerID))) continue
+      if (!selected || step.started > selected.started) selected = step
+    }
+    return selected?.span?.spanContext()
+  }
+
   onPermissionEvent(event: PermissionEvent): void {
     const execution = this.active.get(event.data.sessionID)
     if (!execution) return

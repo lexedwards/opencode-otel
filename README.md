@@ -54,6 +54,8 @@ Optional `providerNames` maps an OpenCode provider ID to a GenAI provider name (
 
 Optional `executionExpiryMillis` sets the maximum time active execution/compaction state and unmatched terminal hints may remain in memory (default: 24 hours). Stale spans end as abandoned with a content-free, rate-limited diagnostic. Child and fork sessions have their own traces linked to the parent execution; see [trace topology](docs/architecture.md).
 
+Optional `propagateTraceContext: true` injects W3C `traceparent` and, when present, `tracestate` into supported provider HTTP requests and experimental WebSocket handshakes during active primary model calls or compaction. It is off by default. An existing caller-supplied W3C header takes precedence; unsupported requests and failed injection continue unchanged. Propagation discloses trace identifiers to the provider and may invalidate signed requests if headers are included in the signature. See [propagation policy](docs/provider-propagation.md).
+
 ```mermaid
 flowchart LR
     options[Plugin options] --> resolve[Resolve per signal]

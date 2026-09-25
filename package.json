@@ -16,6 +16,7 @@
     "@opentelemetry/sdk-metrics": "2.11.0",
     "@opentelemetry/otlp-exporter-base": "0.222.0",
     "@opentelemetry/otlp-grpc-exporter-base": "0.222.0",
+    "@opentelemetry/core": "2.11.0",
     "@opentelemetry/exporter-trace-otlp-http": "0.222.0",
     "@opentelemetry/exporter-metrics-otlp-http": "0.222.0",
     "@opentelemetry/exporter-trace-otlp-proto": "0.222.0",

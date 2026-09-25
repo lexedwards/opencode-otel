@@ -1,9 +1,17 @@
 import { Plugin } from "@opencode/plugin"
 import { createRegistry, establishConfig, resolveConfig } from "./config"
 import { createTelemetry, type ExecutionEvent, type ModelEvent, type PermissionEvent, type CompactionEvent, type SessionRelationEvent } from "./telemetry"
+import { injectTraceHeaders } from "./propagation"
 
 const registry = createRegistry()
 let pipeline: ReturnType<typeof createTelemetry> | undefined
+let lastPropagationDiagnostic = 0
+
+function propagationFailure(): void {
+  if (Date.now() - lastPropagationDiagnostic < 60_000) return
+  lastPropagationDiagnostic = Date.now()
+  console.info("[opencode-otel] Trace propagation unavailable; request unchanged")
+}
 
 export default Plugin.define({
   id: "opencode-otel",
@@ -29,6 +37,27 @@ export default Plugin.define({
       } catch {
         console.info("[opencode-otel] Tool hooks unavailable; tool telemetry disabled")
         for (const hook of hooks) await hook.dispose()
+      }
+      if (instance.config.propagateTraceContext) {
+        const registrations: { dispose(): Promise<void> }[] = []
+        try {
+          registrations.push(await ctx.session.hook("http.request", (event) => {
+            try {
+              const context = pipeline?.execution.contextForRequest(event.sessionID, event.kind, event.model)
+              if (context) injectTraceHeaders(event.request.headers, context)
+            } catch { propagationFailure() }
+          }))
+          registrations.push(await ctx.session.hook("experimental.ws.handshake", (event) => {
+            try {
+              const context = pipeline?.execution.contextForRequest(event.sessionID, event.kind, event.model)
+              if (context) injectTraceHeaders(event.headers, context)
+            } catch { propagationFailure() }
+          }))
+          hooks.push(...registrations)
+        } catch {
+          for (const registration of registrations) { try { await registration.dispose() } catch { /* fail open */ } }
+          propagationFailure()
+        }
       }
       void (async () => {
         try {
