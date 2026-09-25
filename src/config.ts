@@ -10,10 +10,10 @@ export type SignalOptions = {
   clientCertificate?: string
   clientKey?: string
 }
-export type Options = SignalOptions & { traces?: SignalOptions; metrics?: SignalOptions }
+export type Options = SignalOptions & { traces?: SignalOptions; metrics?: SignalOptions; providerNames?: Record<string, string> }
 export type SignalConfig = Required<Pick<SignalOptions, "endpoint" | "protocol" | "headers" | "timeoutMillis" | "compression">> &
   Pick<SignalOptions, "certificate" | "clientCertificate" | "clientKey">
-export type Config = { traces?: SignalConfig; metrics?: SignalConfig; diagnostics: string[] }
+export type Config = { traces?: SignalConfig; metrics?: SignalConfig; providerNames?: Record<string, string>; diagnostics: string[] }
 type Environment = Record<string, string | undefined>
 
 function record(value: unknown): Record<string, unknown> {
@@ -106,6 +106,13 @@ function resolveSignal(signal: Signal, options: Record<string, unknown>, env: En
 
 export function resolveConfig(options: unknown, env: Environment = process.env): Config {
   const config: Config = { diagnostics: [] }
+  try {
+    const names = record(record(options).providerNames)
+    config.providerNames = Object.fromEntries(Object.entries(names).map(([key, value]) => {
+      if (!/^[a-z][a-z0-9._-]{0,63}$/.test(key) || typeof value !== "string" || !/^[a-z][a-z0-9._-]{0,63}$/.test(value)) throw Error("provider names")
+      return [key, value]
+    }))
+  } catch { config.diagnostics.push("Provider name overrides invalid; defaults used") }
   for (const signal of ["traces", "metrics"] as const) {
     try {
       config[signal] = resolveSignal(signal, record(options), env)
@@ -122,7 +129,7 @@ export type Registry = { current?: Config; users: number }
 export function createRegistry(): Registry { return { users: 0 } }
 
 export function establishConfig(registry: Registry, proposed: Config): { config: Config; diagnostic?: string; release: () => void } {
-  const diagnostic = registry.current && JSON.stringify([registry.current.traces, registry.current.metrics]) !== JSON.stringify([proposed.traces, proposed.metrics])
+  const diagnostic = registry.current && JSON.stringify([registry.current.traces, registry.current.metrics, registry.current.providerNames]) !== JSON.stringify([proposed.traces, proposed.metrics, proposed.providerNames])
     ? "Effective exporter configuration conflicts with an active instance; restart the OpenCode service to apply changes"
     : undefined
   registry.current ??= proposed

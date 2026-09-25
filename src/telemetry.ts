@@ -16,8 +16,27 @@ export type ExecutionEvent = {
   data: { sessionID: string; error?: { type: string; message: string; status?: number }; reason?: string }
 }
 
+export type ModelEvent = {
+  id: string
+  created: number
+  type: "session.step.started" | "session.step.streamed" | "session.step.ended" | "session.step.failed" | "session.retry.scheduled"
+  location?: { directory?: string }
+  data: {
+    sessionID: string
+    assistantMessageID: string
+    started?: number
+    model?: { id: string; providerID: string }
+    attempt?: number
+    error?: { type: string; message: string; status?: number }
+    finish?: string
+    cost?: number
+    tokens?: { input: number; output: number; reasoning: number; cache: { read: number; write: number } }
+  }
+}
+
 type ToolState = { started: number; span?: Span }
-type Active = { id: string; started: number; span?: Span; tools: Map<string, ToolState>; completedTools: Set<string>; toolCalls: number }
+type ModelState = { started: number; span?: Span; provider: string; model: string; firstChunk?: number; retries: number; retryEvents: Set<string> }
+type Active = { id: string; started: number; span?: Span; tools: Map<string, ToolState>; completedTools: Set<string>; toolCalls: number; models: Map<string, ModelState>; completedModels: Set<string>; inferenceCalls: number }
 
 export type ToolEvent = { sessionID: string; id: string; tool: string; status?: "completed" | "error"; input?: unknown; result?: unknown; error?: unknown }
 
@@ -27,12 +46,24 @@ export class ExecutionTelemetry {
   private readonly histogram?: ReturnType<Meter["createHistogram"]>
   private readonly toolDuration?: ReturnType<Meter["createHistogram"]>
   private readonly toolCalls?: ReturnType<Meter["createHistogram"]>
+  private readonly modelDuration?: ReturnType<Meter["createHistogram"]>
+  private readonly firstChunk?: ReturnType<Meter["createHistogram"]>
+  private readonly tokenUsage?: ReturnType<Meter["createHistogram"]>
+  private readonly inferenceCalls?: ReturnType<Meter["createHistogram"]>
+  private readonly cost?: ReturnType<Meter["createCounter"]>
+  private readonly retryCount?: ReturnType<Meter["createCounter"]>
   private lastDroppedDiagnostic = 0
 
-  constructor(private readonly tracer?: Tracer, meter?: Meter, private readonly now: () => number = Date.now) {
+  constructor(private readonly tracer?: Tracer, meter?: Meter, private readonly now: () => number = Date.now, private readonly providerNames: Record<string, string> = {}) {
     this.histogram = meter?.createHistogram("gen_ai.invoke_agent.duration", { unit: "s", description: "Agent invocation duration" })
     this.toolDuration = meter?.createHistogram("gen_ai.execute_tool.duration", { unit: "s", description: "Tool execution duration" })
     this.toolCalls = meter?.createHistogram("gen_ai.invoke_agent.tool_calls", { unit: "{call}", description: "Tool calls per agent invocation" })
+    this.modelDuration = meter?.createHistogram("gen_ai.client.operation.duration", { unit: "s" })
+    this.firstChunk = meter?.createHistogram("gen_ai.client.operation.time_to_first_chunk", { unit: "s" })
+    this.tokenUsage = meter?.createHistogram("gen_ai.client.token.usage", { unit: "{token}" })
+    this.inferenceCalls = meter?.createHistogram("gen_ai.invoke_agent.inference_calls", { unit: "{call}" })
+    this.cost = meter?.createCounter("opencode.gen_ai.cost", { unit: "USD" })
+    this.retryCount = meter?.createCounter("opencode.gen_ai.retry.count", { unit: "{retry}" })
   }
 
   onEvent(event: ExecutionEvent, projectID: string): void {
@@ -51,7 +82,7 @@ export class ExecutionTelemetry {
       const attributes: Record<string, string> = { "gen_ai.operation.name": "invoke_agent", "opencode.project.id": projectID }
       if (event.location?.workspaceID) attributes["opencode.workspace.id"] = event.location.workspaceID
       const span = this.tracer?.startSpan("invoke_agent", { kind: SpanKind.INTERNAL, attributes, startTime: event.created }, ROOT_CONTEXT)
-      this.active.set(session, { id: event.id, started: event.created, span, tools: new Map(), completedTools: new Set(), toolCalls: 0 })
+      this.active.set(session, { id: event.id, started: event.created, span, tools: new Map(), completedTools: new Set(), toolCalls: 0, models: new Map(), completedModels: new Set(), inferenceCalls: 0 })
       return
     }
     const execution = this.active.get(session)
@@ -61,7 +92,13 @@ export class ExecutionTelemetry {
       tool.span?.setAttribute("opencode.tool.outcome", "abandoned")
       tool.span?.end(event.created)
     }
+    for (const model of execution.models.values()) {
+      model.span?.setStatus({ code: SpanStatusCode.ERROR })
+      model.span?.setAttribute("opencode.model.outcome", "abandoned")
+      model.span?.end(event.created)
+    }
     this.toolCalls?.record(execution.toolCalls, { "gen_ai.operation.name": "invoke_agent" })
+    this.inferenceCalls?.record(execution.inferenceCalls, { "gen_ai.operation.name": "invoke_agent" })
     const outcome = event.type.slice("session.execution.".length)
     const duration = Math.max(0, (event.created - execution.started) / 1000)
     const attrs = { "gen_ai.operation.name": "invoke_agent", "error.type": event.type === "session.execution.failed" ? safeErrorType(event.data.error?.type) : undefined }
@@ -75,6 +112,61 @@ export class ExecutionTelemetry {
       execution.span?.setStatus({ code: SpanStatusCode.ERROR })
     } else execution.span?.setStatus({ code: SpanStatusCode.OK })
     execution.span?.end(event.created)
+  }
+
+  onModelEvent(event: ModelEvent): void {
+    const execution = this.active.get(event.data.sessionID)
+    if (!execution) return
+    const id = event.data.assistantMessageID
+    if (event.type === "session.step.started") {
+      if (execution.models.has(id) || execution.completedModels.has(id) || execution.models.size >= 2048 || !event.data.model) return
+      const started = event.data.started ?? event.created
+      const provider = Object.hasOwn(this.providerNames, event.data.model.providerID) ? this.providerNames[event.data.model.providerID] : providerName(event.data.model.providerID)
+      const model = event.data.model.id
+      const attrs = { "gen_ai.operation.name": "chat", "gen_ai.provider.name": provider, "gen_ai.request.model": model }
+      const parent = execution.span ? trace.setSpan(ROOT_CONTEXT, execution.span) : ROOT_CONTEXT
+      const span = this.tracer && execution.span ? this.tracer.startSpan(`chat ${model}`, { kind: SpanKind.CLIENT, startTime: started, attributes: attrs }, parent) : undefined
+      execution.models.set(id, { started, span, provider, model, retries: 0, retryEvents: new Set() })
+      return
+    }
+    const step = execution.models.get(id)
+    if (!step) return
+    if (event.type === "session.retry.scheduled") {
+      if (step.retryEvents.has(event.id)) return
+      step.retryEvents.add(event.id)
+      step.retries++
+      step.span?.addEvent("opencode.gen_ai.retry", { "error.type": safeErrorType(event.data.error?.type) }, event.created)
+      return
+    }
+    if (event.type === "session.step.streamed") {
+      step.firstChunk ??= event.created
+      return
+    }
+    execution.models.delete(id)
+    execution.completedModels.add(id)
+    if (execution.completedModels.size > 4096) execution.completedModels.delete(execution.completedModels.values().next().value!)
+    execution.inferenceCalls++
+    const dimensions = { "gen_ai.operation.name": "chat", "gen_ai.provider.name": step.provider }
+    const failed = event.type === "session.step.failed"
+    const attrs = { ...dimensions, "error.type": failed ? safeErrorType(event.data.error?.type) : undefined }
+    step.span?.setAttribute("opencode.gen_ai.retry.count", step.retries)
+    if (failed) {
+      step.span?.setAttribute("error.type", attrs["error.type"]!)
+      step.span?.setStatus({ code: SpanStatusCode.ERROR })
+    } else step.span?.setStatus({ code: SpanStatusCode.OK })
+    const tokens = event.data.tokens
+    if (tokens && [tokens.input, tokens.output, tokens.cache?.read, tokens.cache?.write].every((value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0)) {
+      const input = tokens.input + tokens.cache.read + tokens.cache.write
+      step.span?.setAttribute("gen_ai.usage.input_tokens", input)
+      step.span?.setAttribute("gen_ai.usage.output_tokens", tokens.output)
+      this.tokenUsage?.record(input, { ...dimensions, "gen_ai.token.type": "input" })
+      this.tokenUsage?.record(tokens.output, { ...dimensions, "gen_ai.token.type": "output" })
+    }
+    this.modelDuration?.record(Math.max(0, (event.created - step.started) / 1000), attrs)
+    if (step.firstChunk !== undefined) this.firstChunk?.record(Math.max(0, (step.firstChunk - step.started) / 1000), dimensions)
+    if (event.data.cost !== undefined && Number.isFinite(event.data.cost) && event.data.cost >= 0) this.cost?.add(event.data.cost, dimensions)
+    if (step.retries) this.retryCount?.add(step.retries, dimensions)
+    step.span?.end(event.created)
   }
 
   toolBefore(event: ToolEvent): void {
@@ -109,12 +201,18 @@ export class ExecutionTelemetry {
   end(): void {
     for (const execution of this.active.values()) {
       for (const tool of execution.tools.values()) tool.span?.end()
+      for (const model of execution.models.values()) model.span?.end()
       execution.span?.setAttribute("opencode.execution.outcome", "abandoned")
       execution.span?.end()
     }
     this.active.clear()
     this.seen.clear()
   }
+}
+
+function providerName(id: string): string {
+  const known: Record<string, string> = { "google-vertex": "gcp.vertex_ai", google: "gcp.gemini", "amazon-bedrock": "aws.bedrock", azure: "azure.ai.openai", mistral: "mistral_ai" }
+  return Object.hasOwn(known, id) ? known[id] : id
 }
 
 function safeErrorType(type?: string): string {
@@ -169,7 +267,7 @@ export function createTelemetry(config: Config, version: string, exporters: Expo
   const resource = resourceFromAttributes({ "service.name": "opencode", "service.version": version, "service.instance.id": instanceID })
   const traces = exporters.traces ? new BasicTracerProvider({ resource, spanProcessors: [new BatchSpanProcessor(exporters.traces, { maxQueueSize: 2048, maxExportBatchSize: 512 })] }) : undefined
   const metrics = exporters.metrics ? new MeterProvider({ resource, readers: [new PeriodicExportingMetricReader({ exporter: exporters.metrics })] }) : undefined
-  const execution = new ExecutionTelemetry(traces?.getTracer("opencode-otel"), metrics?.getMeter("opencode-otel"), now)
+  const execution = new ExecutionTelemetry(traces?.getTracer("opencode-otel"), metrics?.getMeter("opencode-otel"), now, config.providerNames)
   return {
     execution,
     traces,

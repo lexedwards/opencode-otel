@@ -1,6 +1,6 @@
 import { Plugin } from "@opencode/plugin"
 import { createRegistry, establishConfig, resolveConfig } from "./config"
-import { createTelemetry, type ExecutionEvent } from "./telemetry"
+import { createTelemetry, type ExecutionEvent, type ModelEvent } from "./telemetry"
 
 const registry = createRegistry()
 let pipeline: ReturnType<typeof createTelemetry> | undefined
@@ -35,9 +35,12 @@ export default Plugin.define({
       void (async () => {
         try {
           for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
-            if (typeof event.type !== "string" || !event.type.startsWith("session.execution.")) continue
+            if (typeof event.type !== "string" || !(event.type.startsWith("session.execution.") || event.type.startsWith("session.step.") || event.type === "session.retry.scheduled")) continue
             if (event.location?.directory && event.location.directory !== ctx.location.directory) continue
-            try { pipeline?.execution.onEvent(event as ExecutionEvent, ctx.location.project.id) } catch { /* fail open */ }
+            try {
+              if (event.type.startsWith("session.execution.")) pipeline?.execution.onEvent(event as ExecutionEvent, ctx.location.project.id)
+              else pipeline?.execution.onModelEvent(event as ModelEvent)
+            } catch { /* fail open */ }
           }
         } catch {
           if (!controller.signal.aborted) console.info("[opencode-otel] Event subscription stopped; telemetry unavailable")
