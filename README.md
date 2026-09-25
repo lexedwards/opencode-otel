@@ -7,7 +7,7 @@ Unofficial community OpenCode plugin for OpenTelemetry traces and metrics. Cover
 Install globally with the OpenCode v2 CLI:
 
 ```sh
-opencode plugin add 'github:lexedwards/opencode-otel#v0.1.0'
+opencode plugin add 'github:lexedwards/opencode-otel#v0.1.1'
 ```
 
 CLI installation alone does not activate telemetry; the OpenCode server also needs an OTLP endpoint (for example, `OTEL_EXPORTER_OTLP_ENDPOINT` in its environment). Alternatively, configure the package **with options** in `~/.config/opencode/opencode.jsonc`:
@@ -17,7 +17,7 @@ CLI installation alone does not activate telemetry; the OpenCode server also nee
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
     {
-      "package": "github:lexedwards/opencode-otel#v0.1.0",
+      "package": "github:lexedwards/opencode-otel#v0.1.1",
       "options": { "endpoint": "https://collector.example:4318" }
     }
   ]
@@ -26,13 +26,13 @@ CLI installation alone does not activate telemetry; the OpenCode server also nee
 
 | Git ref | Use |
 | --- | --- |
-| Immutable SemVer tag, e.g. `#v0.1.0` | Recommended for stable use; pin a verified release. |
+| Immutable SemVer tag, e.g. `#v0.1.1` | Recommended for stable use; pin a verified release. |
 | `#main` | Track development changes. |
 | No ref | Follow the repository's changing default branch. |
 
-Do not use a mutable `latest` Git ref. Minimum OpenCode version: **2.0.11**; specifically targeted: **2.0.16**. Later v2 compatibility is best-effort; upstream does not promise SemVer compatibility for plugin APIs. See the [v0.1.0 release notes](https://github.com/lexedwards/opencode-otel/releases/tag/v0.1.0) and [verification limits](docs/release-checklist.md).
+Do not use a mutable `latest` Git ref. Minimum OpenCode version: **2.0.11**; specifically targeted: **2.0.16**. Later v2 compatibility is best-effort; upstream does not promise SemVer compatibility for plugin APIs. See the [v0.1.1 release notes](https://github.com/lexedwards/opencode-otel/releases/tag/v0.1.1) and [verification limits](docs/release-checklist.md).
 
-Use the tag name `#v0.1.0` in the Git package spec. Bun 1.4.0 does not resolve `#semver:0.1.0` for this GitHub repository.
+Use the tag name `#v0.1.1` in the Git package spec. Bun 1.4.0 does not resolve `#semver:0.1.1` for this GitHub repository. The earlier `v0.1.0` tag fails OpenCode CLI Git installation; use `v0.1.1` instead.
 
 ## Configure
 

@@ -1,6 +1,6 @@
 # v1 release readiness
 
-Unofficial community plugin. Package **0.1.0** targets OpenCode **2.0.16** (baseline **>=2.0.11**). Later v2 compatibility is best-effort; upstream does not promise SemVer compatibility for plugin APIs.
+Unofficial community plugin. Package **0.1.1** targets OpenCode **2.0.16** (baseline **>=2.0.11**). Later v2 compatibility is best-effort; upstream does not promise SemVer compatibility for plugin APIs.
 
 ## Reproducible checks
 
@@ -11,7 +11,7 @@ bun install --frozen-lockfile
 bun run verify
 ```
 
-`verify` runs Biome formatting/lint, **TypeScript 7.0.2**, a Bun-target build, unit tests (including pinned-schema checks), and `bun pm pack --dry-run`. `tsconfig.json` explicitly lists `"types": ["bun"]`, as [Bun requires for TypeScript 6+](https://bun.com/docs/typescript-6). The Git package exports `./src/index.ts` with `src/` and pinned runtime dependencies; generated `dist/` is only a build-check artifact.
+`verify` runs Biome formatting/lint, **TypeScript 7.0.2**, a Bun-target build, unit tests (including pinned-schema checks), and `bun pm pack --dry-run`. `tsconfig.json` explicitly lists `"types": ["bun"]`, as [Bun requires for TypeScript 6+](https://bun.com/docs/typescript-6). The Git package exports `./src/index.ts` with `src/` and pinned runtime dependencies; generated `dist/` is only a build-check artifact. The Bun build check uses `check:bundle`, not npm's `build` lifecycle trigger, so OpenCode can install the Git package without preparing it.
 
 **Verification limit:** mocked/in-memory exporters only. No launched OpenCode, SDK service, Collector, live provider, TLS handshake, or network integration test substantiates interoperability. gRPC under Bun is experimental; see [compatibility evidence](otlp-compatibility.md).
 
